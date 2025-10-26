@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <!doctype html>
 <html lang="en">
 <head>
@@ -161,3 +162,168 @@
   </script>
 </body>
 </html>
+=======
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CelestiGuard Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0b0c10; --panel:#1f2833; --acc:#66fcf1; --muted:#c5c6c7; --link:#45a29e; --border:#263241;
+    }
+    html,body{margin:0}
+    body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--muted)}
+    a{color:var(--link);text-decoration:none}
+    .container{max-width:1100px;margin:0 auto;padding:24px}
+    /* Nav */
+    .nav{
+      position:sticky; top:0; z-index:10;
+      background:rgba(11,12,16,.8); backdrop-filter: blur(6px);
+      border-bottom:1px solid var(--border);
+    }
+    .nav-inner{display:flex;align-items:center;gap:16px;justify-content:space-between;padding:12px 24px}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:700;color:var(--acc)}
+    .brand img{width:24px;height:24px;border-radius:999px;border:1px solid var(--border);object-fit:cover}
+    .links{display:flex;gap:14px;flex-wrap:wrap}
+    .link{color:#9fb4b8;padding:6px 10px;border-radius:8px}
+    .link.active{color:#0b0c10;background:var(--acc);font-weight:600}
+    /* Layout bits */
+    h1,h2,h3{color:var(--acc);margin:0 0 8px 0}
+    .muted{color:#9fb4b8}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
+    .version-block{border:1px solid var(--link);background:var(--panel);border-radius:10px;padding:12px;margin:12px 0}
+    .spacer{height:16px}
+    .footer{border-top:1px solid var(--border);margin-top:24px;padding-top:16px;text-align:center;font-size:13px;color:#9fb4b8}
+    /* Smooth scroll offset for sticky nav */
+    section{scroll-margin-top:72px;}
+  </style>
+</head>
+<body>
+  <!-- NAV -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <div class="brand">
+        <!-- optional: if you render the avatar server-side into the template, swap src to {{ avatar_url }} -->
+        <img id="botAvatar" src="https://cdn.discordapp.com/embed/avatars/0.png" alt="bot" />
+        CelestiGuard
+      </div>
+      <div class="links">
+        <a href="#home" class="link" data-link>Home</a>
+        <a href="#guilds" class="link" data-link>Guilds</a>
+        <a href="#changelog" class="link" data-link>Changelog</a>
+        <a href="#settings" class="link" data-link>Settings</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <!-- HOME -->
+    <section id="home">
+      <h1>CelestiGuard Dashboard</h1>
+      <p class="muted">Use your permanent token, or generate one-time tokens on guild pages for safer sharing.</p>
+      <div class="spacer"></div>
+      <div class="card">
+        <h2>Welcome</h2>
+        <p>This dashboard lets you manage counting, view leaderboards, tweak settings, and share secure one-time links.</p>
+      </div>
+    </section>
+
+    <div class="spacer"></div>
+
+    <!-- GUILDS (optional: you can server-render cards here if you like) -->
+    <section id="guilds">
+      <h2>Guilds</h2>
+      <div id="guildCards" class="grid">
+        <!-- If your FastAPI index route server-renders guilds, you can also inject them here. -->
+        <div class="card"><span class="muted">Your guilds will appear here.</span></div>
+      </div>
+    </section>
+
+    <div class="spacer"></div>
+
+    <!-- CHANGELOG -->
+    <section id="changelog">
+      <h2>Changelog</h2>
+      <div id="changelogContainer" class="card">
+        Loading changelog…
+      </div>
+    </section>
+
+    <div class="spacer"></div>
+
+    <!-- SETTINGS (placeholder, wire to your forms or API) -->
+    <section id="settings">
+      <h2>Settings</h2>
+      <div class="card">
+        <p class="muted">Settings live here. (Hook this up to your existing FastAPI forms or add new JSON APIs.)</p>
+      </div>
+    </section>
+
+    <div class="footer">CelestiGuard</div>
+  </main>
+
+  <script>
+    // highlight active nav link
+    function updateActive() {
+      const hash = location.hash || '#home';
+      document.querySelectorAll('[data-link]').forEach(a=>{
+        a.classList.toggle('active', a.getAttribute('href') === hash);
+      });
+    }
+    window.addEventListener('hashchange', updateActive);
+    window.addEventListener('load', updateActive);
+
+    // smooth scroll for in-page links
+    document.querySelectorAll('[data-link]').forEach(a=>{
+      a.addEventListener('click', e=>{
+        const id = a.getAttribute('href');
+        if (id && id.startsWith('#')) {
+          e.preventDefault();
+          history.pushState(null, '', id);
+          updateActive();
+          const el = document.querySelector(id);
+          if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+        }
+      });
+    });
+
+    // load changelog from your FastAPI endpoint /api/changelog
+    async function loadChangelog() {
+      try {
+        const res = await fetch('/api/changelog');
+        const data = await res.json();
+        const c = document.getElementById('changelogContainer');
+        if (!Array.isArray(data) || data.length === 0 || data.error) {
+          c.textContent = 'Changelog not found.';
+          return;
+        }
+        c.innerHTML = data.map(entry => `
+          <div class="version-block">
+            <h3>${entry.version} — <small>${entry.date}</small></h3>
+            <ul>${entry.changes.map(ch => `<li>${ch}</li>`).join('')}</ul>
+          </div>
+        `).join('');
+      } catch (e) {
+        document.getElementById('changelogContainer').textContent = 'Failed to load changelog.';
+      }
+    }
+
+    // (optional) load bot avatar for the nav if your backend exposes it
+    async function loadBrandAvatar(){
+      try{
+        const res = await fetch('/api/brand-avatar');
+        if(!res.ok) return;
+        const { url } = await res.json();
+        if(url) document.getElementById('botAvatar').src = url;
+      }catch(_){}
+    }
+
+    loadChangelog();
+    loadBrandAvatar();
+  </script>
+</body>
+</html>
+>>>>>>> dd54628 (start project)
