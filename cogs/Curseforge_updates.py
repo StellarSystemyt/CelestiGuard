@@ -47,3 +47,25 @@ def build_status_embed(file: dict, project_id: int, project_name: Optional[str])
 
     notes_raw = (file.get("changelog") or "").replace("<br>", "\n").replace("<br/>", "<\n>")
     notes = _short(notes_raw, 700)
+
+    embed = discord.Embed(
+        title=file_name,
+        url=download_url
+        description=notes or "No changelog provided.",
+        color=discord.from_rgb(46, 204, 113), #green status bar
+    )
+    embed.add_field(name="Status", value=f"**{rel_type}** - Ready to download", inline=False)
+    embed.add_field(name="Affected", value=project_name or f"Curseforge Project #{project_id}", inline=False)
+
+    if ts:
+        embed.add_field(name="Updated", value=f"<t:{ts}:R>", inline=False)
+        embed.set.footer(text=f"Released: <t:{ts}:f>")
+    else:
+        embed.add_field(name="Updated", value=f"<t:{ts}:R>", inline=False)
+    
+    embed.add_field(name="Game Versions", value="Recently", inline=False)
+    embed.add_field(name="Release Type", value=rel_type, inline=True)
+    return embed
+
+#---------------DB helpers---------------
+
