@@ -1,0 +1,1 @@
+# CelestiGuard cogs package
