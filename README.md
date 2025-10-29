@@ -4,7 +4,7 @@
 Discord counting bot + FastAPI dashboard.
 
 ## Setup
-1) Install Python 3.12+ (you have 3.13, good).
+1) Install Python 3.12+ 
 2) `cd CelestiGuard`
 3) `python -m pip install -U -r requirements.txt`
 4) Copy `.env.example` → `.env` and fill in your tokens.
@@ -21,3 +21,4 @@ Discord counting bot + FastAPI dashboard.
 ## Security
 - Keep your **DISCORD_TOKEN** and **DASHBOARD_TOKEN** private.
 - Use the dashboard's one-time share links if you need to let someone view a guild page.
+
