@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # bot.py
 from __future__ import annotations
 import os
@@ -126,7 +125,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-=======
 # bot.py
 from __future__ import annotations
 import os
@@ -254,4 +252,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
->>>>>>> dd54628 (start project)
