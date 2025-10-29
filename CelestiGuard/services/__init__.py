@@ -1,1 +1,0 @@
-# CelestiGuard services package
