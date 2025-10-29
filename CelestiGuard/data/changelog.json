@@ -1,0 +1,20 @@
+[
+  {
+    "version": "0.0.4.4",
+    "date": "2025-10-26",
+    "changes": [
+      "Changelog API and UI added",
+      "Dashboard theme + avatar polish",
+      "Counting fixes for scientific notation and unicode digits"
+    ]
+  },
+  {
+    "version": "0.0.4.3",
+    "date": "2025-10-24",
+    "changes": [
+      "Initial CelestiGuard release",
+      "Counting cog + dashboard",
+      "Cloudflare-free AWS deploy with Nginx + Certbot"
+    ]
+  }
+]
