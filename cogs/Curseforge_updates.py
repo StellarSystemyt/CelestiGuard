@@ -69,3 +69,38 @@ def build_status_embed(file: dict, project_id: int, project_name: Optional[str])
 
 #---------------DB helpers---------------
 
+def _ensure_tables():
+    db_init()
+    with get_conn() as c:
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS cf_subs (
+        project_id INTEGER NOT NULL,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        mention TEXT,
+        last_file_id INTEGER,
+        PRIMARY KEY(project_id, guild_id)
+        )
+        """)
+
+def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: Optional[str]):
+    _ensure_tables()
+    with get_conn() as c:
+        c.execute("""
+        INSERT INTO cf_subs(project_id, guild_id, channel_id, mention, last_file_id)
+          VALUES(?,?,?,?,COALESCE((SELECT last_file_id FROM cf_subs WHERE project_id=? AND guild_id=?), NULL))
+          ON CONFLICT(project_id, guild_id) DO UPDATE SET
+            channel_id=excluded.channel_id,
+            mention=excluded.mention
+        """,(project_id, guild_id, channel_id, mention, project_id, guild_id))
+
+    def remove_sub(project_id: int, guild_id: int) -> bool:
+        _ensure_tables()
+        with get_conn() as c:
+            cur = c.execute("DELETE FROM cf_subs WHERE project_id=? AND guild_id=?", (project_id, guild_id))
+            return cur.rowcount > 0
+    
+    def list_subs(guild_id: int):
+        _ensure_tables
+        with get_conn() as c:
+            return [dict(r) for r in c.execute]
