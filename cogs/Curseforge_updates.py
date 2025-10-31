@@ -102,4 +102,13 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
     def list_subs(guild_id: int):
         _ensure_tables
         with get_conn() as c:
-            return [dict(r) for r in c.execute]
+            return [dict(r) for r in c.execute("SELECT * FROM cf_subs WHERE guild_id=?", (guild_id)).fetchall()]
+
+    def update_last_file_id(project_id: int, guild_id: int, file_id: int):
+        with get_conn() as c:
+            c.execute("UPDATE cf_subs SET last_file_id=? WHERE project_id=? AND guild_id=?", (file_id, project_id, guild_id))
+
+    def fetch_all_subs():
+        _ensure_tables()
+        with get_conn() as c:
+            return [dict(r) for r in c.execute("SELECT * FROM cf_subs").fetchall()]
