@@ -7,7 +7,6 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-
 from services.db import get_conn, init as db_init
 
 API_BASE = "https://api.curseforge.com/v1"
