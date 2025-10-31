@@ -23,7 +23,7 @@ INTENTS_MEMBERS = os.getenv("INTENTS_MEMBERS", "false").lower() in ("1", "true",
 INTENTS_PRESENCES = os.getenv("INTENTS_PRESENCES", "false").lower() in ("1", "true", "yes", "on")
 
 # Optional: comma, space or newline separated list of cogs to load
-COGS_RAW = os.getenv("COGS", "cogs.counting,cogs.logs,cogs.moderation,cogs.admin")
+COGS_RAW = os.getenv("COGS", "cogs.counting,cogs.logs,cogs.moderation,cogs.admin,cogs.Curseforge_updates")
 COGS = [c.strip() for chunk in COGS_RAW.split("\n") for c in chunk.split(",") if c.strip()]
 
 # Import webapp after env is loaded
