@@ -220,4 +220,63 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
 
     #----------------Slash Commands------------------
 
+    group = app_commands.Group(name="cf", description="CurseForge update notifications")
+
+    @group.command(name="Subscribe", description="Subscribe a channel to CurseForge file updates for a project.")
+    @app_commands.describe(project_id="CurseForge Project ID", channel="Channel to post in", mention="Optional role to mention (role or @everyone)")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def cf_subscribe(self, interaction: discord.Interaction,
+                           project_id: int,
+                           channel: discord.TextChannel,
+                           mention: Optional[discord.Role] = None):
+        if not self.api_key:
+            await interaction.response.send_message("⚠️ Set `CURSEFORGE_API_KEY` in your environment first.", ephemeral=True)
+            return
+        add_or_update_sub(project_id, integration.guild_id, channel.id, str(mention.id) if mention else None)
+        await integration.response.send_message(f"✅ Subscribed **{channel.mention}** to project **{project_id}**.", ephemeral=True)
+
+    @group.command(name="unsubscribe", description="Remove a CurseForge project subscription.")
+    @app_commands.describe(project_id="CurseForge Project ID")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def cf_unsubscribe(self, interaction: discord.Interaction, project_id:int):
+        ok = remove_sub(project_id, interaction.guild_id)
+        await interaction.response.send_message("🗑️ Subscription removed." if ok else "ℹ️ No subscription for that project.", emphemeral=True)
     
+    @group.command(name="list", description="List current CurseForge subscriptions in this server.")
+    async def cf_list(self, interaction: discord.Interaction):
+        rows = list_subs(interaction.guild_id)
+        if not rows:
+            await interaction.response.send_message("No CurseForge subscriptions in this server.", ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            m = r["mention"]
+            mm = f"<@&{m}>" if m and str(m).isdigit() else (m or"—")
+            lines.append(f"• Project `{r['project_id']}` → <#{r['channel_id']}> — mention: {mm}")
+            await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @group.command(name="check", description="Immediately fetch and post the latest file for a project here.")
+    @app_commands.describe(project_id="CurseForge Project ID")
+    async def cf_check(self, interaction: discord.Interaction, project_id: int):
+        if not self.api_key:
+            await interaction.response.send_message("⚠️ Set `CURSEFORGE_API_KEY` in your environment first.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        latest = await fetch_latest_file(self.session, self.api_key, project_id)
+        if not latest:
+            await interaction.followup.send("No file found (or API error)." ephemeral=True)
+            return
+        name = await fetch_project_name(self.session, self.api_key, project_id)
+        embed = build_status_embed(latest, project_id, name)
+        project_url = f"https://www.curseforge.com/projects/{project_id}"
+        download_url = latest.get("download_url") or latest.get("fileUrl") or project_url
+        view = CFButtons(download_url, project_url)
+
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.followup.send("Posted the latest file.", ephemeral=True)
+
+async def setup(bot:commands.Bot):
+    await bot.add_cog(CurseForgeUpdates(bot))
+    bot.tree.add_command(CurseForgeUpdates.group)
