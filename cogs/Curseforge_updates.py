@@ -217,3 +217,7 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
         @poll_task.before_loop
         async def _before(self):
             await self.bot.wait_until_ready()
+
+    #----------------Slash Commands------------------
+
+    
