@@ -115,4 +115,22 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
 
     #--------------------API----------------------
 
-    
+    async def fetch_latest_file(session: aiohttp.ClientSession, api_key: str, project_id: int) -> Optional[dict]:
+        url = f"{API_BASE}/mods/{project_id}/files"
+        headers = {"x-api-key": api_key}
+        params = {"pageSize": 1, "sortOrder": "desc"} # newest first
+        async with session.get(url, headers=headers, params=params, timeout=20) as r:
+            if r.status !=200:
+                return None
+            data = await r.json()
+            arr = (data or {}).get("data") or []
+            return arr[0] if arr else None
+
+    async def fetch_project_name(session: aiohttp.ClientSession, api_key: str, project_id: int) -> Optional[dict]:\
+        headers = {"x-api-key": api_key}
+        url = f"{API_BASE}/mods/{project_id}"
+        async with session.get(url, headers=headers, timeout=15) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+            return (data or {}).get("data", {}).get("name")
