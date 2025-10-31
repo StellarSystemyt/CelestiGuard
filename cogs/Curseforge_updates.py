@@ -112,3 +112,7 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
         _ensure_tables()
         with get_conn() as c:
             return [dict(r) for r in c.execute("SELECT * FROM cf_subs").fetchall()]
+
+    #--------------------API----------------------
+
+    
