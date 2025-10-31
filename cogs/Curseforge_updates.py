@@ -50,7 +50,7 @@ def build_status_embed(file: dict, project_id: int, project_name: Optional[str])
 
     embed = discord.Embed(
         title=file_name,
-        url=download_url
+        url=download_url,
         description=notes or "No changelog provided.",
         color=discord.from_rgb(46, 204, 113), #green status bar
     )
