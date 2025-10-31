@@ -136,3 +136,84 @@ def add_or_update_sub(project_id: int, guild_id: int, channel_id: int, mention: 
             return (data or {}).get("data", {}).get("name")
 
     #--------------------Cog----------------
+
+    class CurseForgeUpdates(commands.Cog):
+        def __init__(self, bot: commands.Bot):
+            self.bot = bot
+            _ensure_tables()
+            self.api_key = None
+            self.poll_seconds = None
+            self.session: Optional[aiohttp.ClientSession] = None
+            self.poll_task.start()
+
+        def cog_unload(self):
+            self.poll_task.cancel()
+            if self.session and not self.session.closed:
+                asyncio.create_task(self.session.close())
+
+        @tasks.loop(seconds=30.0)
+        async def poll_task(self):
+            if self.api_key is None:
+                import os
+                self.api_key = os.getenv("CURSEFORGE_API_KEY")
+                self.poll_seconds = int(os.getenv("CF_POLL_SECONDS", "300"))
+
+            if not self.api_key:
+                await asyncio.sleep(60)
+                return
+
+            if self.session is None or self.session.closed:
+                self.session = aiohttp.ClientSession()
+
+            subs = fetch_all_subs()
+            if not subs:
+                await asyncio.sleep(self.poll_seconds)
+                return
+
+            for sub in subs:
+                project_id = int(sub["project_id"])
+                guild = self.bot.get_guild(int(sub["channel_id"]))
+                if not guild:
+                    continue
+                channel = guild.get_channel(int(sub[channel_id]))
+                if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                    continue
+
+                try:
+                    latest = await fetch_latest_file(self.session, self.api_key, project_id)
+                    if not latest:
+                        continue
+
+                    latest_id = int(latest.get("id") or 0)
+                    last_seen = sub.get("last_file_id")
+                    if last_seen and latest_id <= int(last_seen):
+                        continue
+
+                    project_name = await fetch_project_name(self.session, self.api_key, project_id)
+                    embed = build_status_embed(latest, project_id, project_name)
+                    project_url = f"https://www.curseforge.com/projects/{project_id}"
+                    download_url = latest.get("downloadUrl") or latest.get("fileUrl") or project_url
+                    view = CFButtons(download_url, project_url)
+
+                    content = None
+                    mention = sub.get("mention")
+                    if mention:
+                        mention = mention.strip()
+                        if mention.isdigit():
+                            content = f"<@&{mention}>"
+                        else:
+                            content = mention
+
+                    await channel.send(content=content, embed=embed, view=view)
+                    update_last_file_id(project_id, int(sub["guild_id"]), latest_id)
+
+                    await asyncio.sleep(1.2)
+
+                except Exception:
+                    continue
+
+            await asyncio.sleep(self.poll_seconds)
+
+        @poll_task.before_loop
+        async def _before(self):
+            await self.bot.wait_until_ready()
