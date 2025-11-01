@@ -88,6 +88,10 @@ def create_app(version: str = "dev") -> FastAPI:
             raise HTTPException(status_code=403, detail="You are not a member of this guild.")
         return True
 
+    # Helper dependency to avoid lambda capturing issues
+    async def _member_dep(request: Request, gid: int) -> bool:
+        return await require_guild_member(request, gid)
+
     @app.get("/auth/login")
     async def auth_login(_: Request):
         # Build Discord authorize URL
@@ -379,7 +383,7 @@ def create_app(version: str = "dev") -> FastAPI:
             th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid var(--border); }}
             th {{ font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }}
             .footer {{ margin-top: 28px; color: var(--muted); font-size: 13px; text-align:center; }}
-            .toggle {{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:var(--elev); color:var(--muted); cursor:pointer; }}
+            .toggle {{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:var(--elev); color: var(--muted); cursor:pointer; }}
           </style>
           <script>
             (function(){{
@@ -460,11 +464,11 @@ def create_app(version: str = "dev") -> FastAPI:
               el.innerHTML = items.map(entry => `
                 <div class="card" style="margin-top:12px">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-                    <div><strong>${{entry.version || 'unversioned'}}</strong></div>
-                    <div class="muted">${{entry.date || ''}}</div>
+                    <div><strong>\${{entry.version || 'unversioned'}}</strong></div>
+                    <div class="muted">\${{entry.date || ''}}</div>
                   </div>
                   <ul style="margin:10px 0 0 18px">
-                    ${{(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}}
+                    \${{(entry.changes || []).map(c => `<li>\${{c}}</li>`).join('')}}
                   </ul>
                 </div>
               `).join('');
@@ -578,9 +582,12 @@ def create_app(version: str = "dev") -> FastAPI:
         return HTMLResponse(page_shell("CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
     @app.get("/guild/{gid}", response_class=HTMLResponse)
-    async def guild_view(gid: int, request: Request,
-                         _auth: bool = Depends(require_user),
-                         _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
+    async def guild_view(
+        gid: int,
+        request: Request,
+        _auth: bool = Depends(require_user),
+        _member: bool = Depends(_member_dep),
+    ):
         st = get_state(gid)
         extreme = (get_setting(gid, "extreme_mode", "false") == "true")
         delete_wrong = (get_setting(gid, "delete_wrong", "true") == "true")
@@ -714,18 +721,29 @@ def create_app(version: str = "dev") -> FastAPI:
         return HTMLResponse(page_shell(g_name or (f"Guild {gid}"), header_right, body, version, _bot_avatar_url(28)))
 
     @app.post("/guild/{gid}/settings")
-    async def update_settings(gid: int, request: Request, extreme_mode: str | None = Form(None),
-                              delete_wrong: str | None = Form(None), _auth: bool = Depends(require_user),
-                              _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
+    async def update_settings(
+        gid: int,
+        request: Request,
+        extreme_mode: str | None = Form(None),
+        delete_wrong: str | None = Form(None),
+        _auth: bool = Depends(require_user),
+        _member: bool = Depends(_member_dep),
+    ):
         set_setting(gid, "extreme_mode", "true" if extreme_mode == "on" else "false")
         set_setting(gid, "delete_wrong", "true" if delete_wrong == "on" else "false")
         return RedirectResponse(url=f"/guild/{gid}", status_code=HTTP_303_SEE_OTHER)
 
     @app.post("/guild/{gid}/counting")
-    async def update_counting(gid: int, request: Request, channel_id: Optional[str] = Form(None),
-                              set_count: Optional[str] = Form(None), reset: Optional[str] = Form(None),
-                              synccount: Optional[str] = Form(None), _auth: bool = Depends(require_user),
-                              _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
+    async def update_counting(
+        gid: int,
+        request: Request,
+        channel_id: Optional[str] = Form(None),
+        set_count: Optional[str] = Form(None),
+        reset: Optional[str] = Form(None),
+        synccount: Optional[str] = Form(None),
+        _auth: bool = Depends(require_user),
+        _member: bool = Depends(_member_dep),
+    ):
         if channel_id:
             set_state(gid, channel_id=int(channel_id))
         if set_count is not None and set_count != "":
@@ -753,7 +771,7 @@ def create_app(version: str = "dev") -> FastAPI:
         welcome_message: Optional[str] = Form(None),
         autorole_id: Optional[str] = Form(None),
         _auth: bool = Depends(require_user),
-        _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid)),
+        _member: bool = Depends(_member_dep),
     ):
         def _to_int_or_none(v: Optional[str]):
             try:
