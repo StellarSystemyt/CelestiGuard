@@ -91,15 +91,15 @@ def create_app(version: str = "dev") -> FastAPI:
     async def _member_dep(request: Request, gid: int) -> bool:
         return await require_guild_member(request, gid)
 
-    @app.get("/auth/login")
+        @app.get("/auth/login")
     async def auth_login(_: Request):
         # Build Discord authorize URL
+        # NOTE: drop prompt=none to avoid "interaction required" and odd errors
         params = {
             "client_id": OAUTH_CLIENT_ID,
             "response_type": "code",
             "scope": "identify guilds",
-            "redirect_uri": OAUTH_REDIRECT_URI,
-            "prompt": "none",
+            "redirect_uri": OAUTH_REDIRECT_URI,  # MUST exactly match the app settings
         }
         qp = httpx.QueryParams(params)
         url = f"https://discord.com/oauth2/authorize?{qp}"
@@ -108,38 +108,64 @@ def create_app(version: str = "dev") -> FastAPI:
     @app.get("/auth/callback")
     async def auth_callback(request: Request):
         code = request.query_params.get("code")
+        error = request.query_params.get("error")
+        if error:
+            # Surface Discord error (e.g., access_denied)
+            return JSONResponse({"stage": "authorize", "error": error}, status_code=400)
         if not code:
             raise HTTPException(status_code=400, detail="Missing code")
-        data = {
+
+        # Token exchange MUST be form-encoded and include the exact same redirect_uri
+        form = {
             "client_id": OAUTH_CLIENT_ID,
             "client_secret": OAUTH_CLIENT_SECRET,
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": OAUTH_REDIRECT_URI,
         }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
         async with httpx.AsyncClient(timeout=10.0) as client:
-            tr = await client.post(f"{DISCORD_API}/oauth2/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            tr = await client.post(f"{DISCORD_API}/oauth2/token", data=form, headers=headers)
+
         if tr.status_code != 200:
-            raise HTTPException(status_code=401, detail="OAuth exchange failed")
+            # Show Discord's explanation so we can see *why* it failed
+            try:
+                body = tr.json()
+            except Exception:
+                body = {"raw": tr.text}
+            return JSONResponse(
+                {"stage": "token", "status": tr.status_code, "discord": body},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
 
         tok = tr.json()
         access_token = tok.get("access_token")
         if not access_token:
-            raise HTTPException(status_code=401, detail="No access token")
+            return JSONResponse({"stage": "token", "error": "No access token in response"}, status_code=401)
 
         # Fetch user + guilds and store in session
+        auth_hdr = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient(timeout=10.0) as client:
-            ur = await client.get(f"{DISCORD_API}/users/@me", headers={"Authorization": f"Bearer {access_token}"})
-            gr = await client.get(f"{DISCORD_API}/users/@me/guilds", headers={"Authorization": f"Bearer {access_token}"})
+            ur = await client.get(f"{DISCORD_API}/users/@me", headers=auth_hdr)
+            gr = await client.get(f"{DISCORD_API}/users/@me/guilds", headers=auth_hdr)
 
         if ur.status_code != 200:
-            raise HTTPException(status_code=401, detail="Failed to fetch user")
+            try:
+                why = ur.json()
+            except Exception:
+                why = {"raw": ur.text}
+            return JSONResponse({"stage": "userinfo", "discord": why}, status_code=401)
 
         request.session.clear()
         request.session["access_token"] = access_token
         request.session["user"] = ur.json()
         if gr.status_code == 200:
-            request.session["guild_ids"] = [str(g["id"]) for g in gr.json() if "id" in g]
+            try:
+                request.session["guild_ids"] = [str(g["id"]) for g in gr.json() if "id" in g]
+            except Exception:
+                request.session["guild_ids"] = []
 
         return RedirectResponse("/")
 
