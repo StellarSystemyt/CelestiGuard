@@ -373,7 +373,7 @@ def create_app(version: str = "dev") -> FastAPI:
                     <div class="muted">${{entry.date || ''}}</div>
                   </div>
                   <ul style="margin:10px 0 0 18px">
-                    ${(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}
+                   ${{(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}} 
                   </ul>
                 </div>
               `).join('');
