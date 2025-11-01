@@ -1,5 +1,20 @@
 [
   {
+  "version": "0.0.4.6",
+  "date": "2025-11-01",
+  "changes": [
+    "Switched dashboard auth from token-based links to Discord OAuth sessions.",
+    "Dashboard and guild settings now require login and guild membership.",
+    "Changelog and Status pages are public: /changelog, /status (+ /api/*).",
+    "Fixed dependency issue by replacing lambda Depends with `_member_dep`.",
+    "Improved status snapshot robustness for CurseForge last-check timestamp."
+  ],
+  "notes": [
+    "BREAKING: Remove token auth. Set SESSION_SECRET, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI."
+  ]
+},
+
+  {
     "version": "0.0.4.5",
     "date": "2025-10-31",
     "changes": [
