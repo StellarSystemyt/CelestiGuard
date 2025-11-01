@@ -1,11 +1,13 @@
 from __future__ import annotations
-import os, time, secrets, asyncio, json
+import os, time, asyncio, json
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.status import HTTP_303_SEE_OTHER
+from starlette.middleware.sessions import SessionMiddleware
+import httpx
 
 from services.db import (
     get_conn, init,
@@ -40,64 +42,108 @@ def create_app(version: str = "dev") -> FastAPI:
     init()
     app = FastAPI(title="CelestiGuard Dashboard")
 
-    # ---------- Auth ----------
-    async def validate_ephemeral_token(token: str, path_guild_id: int | None) -> bool:
-        if not token:
-            return False
-        now = int(time.time())
-        with get_conn() as c:
-            row = c.execute(
-                "SELECT token, guild_id, expires_ts, used FROM ephemeral_tokens WHERE token=?",
-                (token,),
-            ).fetchone()
-            if not row:
-                return False
-            if row["used"] or row["expires_ts"] < now:
-                return False
-            gid_lock = row["guild_id"]
-            if gid_lock is not None and path_guild_id is not None and gid_lock != path_guild_id:
-                return False
-            c.execute("UPDATE ephemeral_tokens SET used=1 WHERE token=?", (token,))
-            return True
+    # --- Session & Discord OAuth config ---
+    SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")  # set a strong random value in .env
+    OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "")
+    OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "")
+    OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "")
+    DISCORD_API = "https://discord.com/api/v10"
 
-    def require_token(request: Request, gid_in_path: int | None = None):
-        """
-        Accepts either:
-          - permanent token:   ?token=...  or  Authorization: Bearer <TOKEN>
-          - one-time token:    ?ot=...     or  Authorization: Bearer ot:<token>
-        """
-        PERM_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=SESSION_SECRET,
+        same_site="lax",
+        https_only=False,  # set True if serving HTTPS directly here (behind nginx it's fine to keep False)
+    )
 
-        qtok = request.query_params.get("token")
-        otok = request.query_params.get("ot")
-        h = request.headers.get("Authorization", "")
-        ht = h.split(" ", 1)[-1] if " " in h else h
+    # ---------- Auth (Discord OAuth) ----------
+    def _is_logged_in(request: Request) -> bool:
+        return "user" in request.session and "access_token" in request.session
 
-        # permanent token
-        if PERM_TOKEN and (qtok == PERM_TOKEN or ht == PERM_TOKEN):
-            return True
+    async def require_user(request: Request):
+        if not _is_logged_in(request):
+            # redirect to /auth/login (which jumps to Discord)
+            raise HTTPException(status_code=302, detail="login", headers={"Location": "/auth/login"})
+        return True
 
-        # ephemeral token via header or query (header form: Authorization: Bearer ot:<token>)
-        if ht.startswith("ot:"):
-            otok = ht[3:]
-        if otok:
-            try:
-                if gid_in_path is None:
-                    gid_str = request.path_params.get("gid") if hasattr(request, "path_params") else None
-                    gid_in_path = int(gid_str) if gid_str else None
-            except Exception:
-                gid_in_path = None
-            ok = asyncio.get_event_loop().run_until_complete(validate_ephemeral_token(otok, gid_in_path))
-            if ok:
-                return True
+    async def _ensure_guilds_cached(request: Request):
+        """Ensure session has the current user's guild IDs cached."""
+        if not _is_logged_in(request):
+            return
+        if "guild_ids" in request.session:
+            return
+        token = request.session["access_token"]
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{DISCORD_API}/users/@me/guilds",
+                                 headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 200:
+            gids = [str(g.get("id")) for g in r.json() if g.get("id")]
+            # store as list for JSON-serializable session
+            request.session["guild_ids"] = gids
 
-        if not PERM_TOKEN:
-            raise HTTPException(status_code=401, detail="Dashboard disabled (no token set)")
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    async def require_guild_member(request: Request, gid: int):
+        await _ensure_guilds_cached(request)
+        gids = set(request.session.get("guild_ids", []))
+        if str(gid) not in gids:
+            raise HTTPException(status_code=403, detail="You are not a member of this guild.")
+        return True
 
-    # helper for FastAPI Depends that includes the path gid
-    def _require_token_with_gid(request: Request, gid: int):
-        return require_token(request, gid)
+    @app.get("/auth/login")
+    async def auth_login(_: Request):
+        # Build Discord authorize URL
+        params = {
+            "client_id": OAUTH_CLIENT_ID,
+            "response_type": "code",
+            "scope": "identify guilds",
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "prompt": "none",
+        }
+        qp = httpx.QueryParams(params)
+        url = f"https://discord.com/oauth2/authorize?{qp}"
+        return RedirectResponse(url)
+
+    @app.get("/auth/callback")
+    async def auth_callback(request: Request):
+        code = request.query_params.get("code")
+        if not code:
+            raise HTTPException(status_code=400, detail="Missing code")
+        data = {
+            "client_id": OAUTH_CLIENT_ID,
+            "client_secret": OAUTH_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tr = await client.post(f"{DISCORD_API}/oauth2/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        if tr.status_code != 200:
+            raise HTTPException(status_code=401, detail="OAuth exchange failed")
+
+        tok = tr.json()
+        access_token = tok.get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=401, detail="No access token")
+
+        # Fetch user + guilds and store in session
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            ur = await client.get(f"{DISCORD_API}/users/@me", headers={"Authorization": f"Bearer {access_token}"})
+            gr = await client.get(f"{DISCORD_API}/users/@me/guilds", headers={"Authorization": f"Bearer {access_token}"})
+
+        if ur.status_code != 200:
+            raise HTTPException(status_code=401, detail="Failed to fetch user")
+
+        request.session.clear()
+        request.session["access_token"] = access_token
+        request.session["user"] = ur.json()
+        if gr.status_code == 200:
+            request.session["guild_ids"] = [str(g["id"]) for g in gr.json() if "id" in g]
+
+        return RedirectResponse("/")
+
+    @app.get("/auth/logout")
+    async def auth_logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/")
 
     # ---------- Helpers ----------
     def _top(gid: int):
@@ -241,7 +287,7 @@ def create_app(version: str = "dev") -> FastAPI:
             },
             "curseforge": {
                 "enabled": "cogs.Curseforge_updates" in (os.getenv("COGS", "") or ""),
-                "last_check_ts": int(cf_last_check) if (cf_last_check and cf_last_check.isdigit()) else None,
+                "last_check_ts": int(cf_last_check) if (cf_last_check and str(cf_last_check).isdigit()) else None,
             },
             "updated_ts": int(time.time()),
         }
@@ -374,7 +420,7 @@ def create_app(version: str = "dev") -> FastAPI:
         </html>
         """
 
-    # ---------- Public, health, and changelog ----------
+    # ---------- Public, health, changelog ----------
     @app.get("/health")
     async def health():
         return JSONResponse({"ok": True, "version": version})
@@ -430,7 +476,7 @@ def create_app(version: str = "dev") -> FastAPI:
         """
         return HTMLResponse(page_shell("Changelog • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-    # ---------- Status API & Page ----------
+    # ---------- Status API & Page (public) ----------
     @app.get("/api/status")
     async def api_status():
         return JSONResponse(_status_snapshot())
@@ -497,17 +543,22 @@ def create_app(version: str = "dev") -> FastAPI:
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-    # ---------- Private (token-protected) dashboard ----------
+    # ---------- Private (OAuth-protected) dashboard ----------
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, _: bool = Depends(require_token)):
+    async def index(request: Request, _auth: bool = Depends(require_user)):
         items = []
         if _bot and _bot.guilds:
             for g in _bot.guilds:
                 items.append(f"""
-                <a class="card-link" href='/guild/{g.id}?token={request.query_params.get("token","")}'>
+                <a class="card-link" href='/guild/{g.id}'>
                   <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
                   <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
                 </a>""")
+        header_right = """
+          <a class="button secondary" href="/auth/logout">Logout</a>
+          <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
+          <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
+        """
         body = f"""
           <div class="row">
             <div class="card" style="grid-column:1/-1">
@@ -516,11 +567,7 @@ def create_app(version: str = "dev") -> FastAPI:
                   <h2 style="margin:0 0 4px 0">Dashboard</h2>
                   <div class="muted">Manage counting channels, sync, and settings.</div>
                 </div>
-                <div class="kv">
-                  <a class="button secondary" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Open Dev Portal</a>
-                  <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
-                  <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
-                </div>
+                <div class="kv">{header_right}</div>
               </div>
             </div>
           </div>
@@ -531,7 +578,9 @@ def create_app(version: str = "dev") -> FastAPI:
         return HTMLResponse(page_shell("CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
     @app.get("/guild/{gid}", response_class=HTMLResponse)
-    async def guild_view(gid: int, request: Request, _: bool = Depends(require_token)):
+    async def guild_view(gid: int, request: Request,
+                         _auth: bool = Depends(require_user),
+                         _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
         st = get_state(gid)
         extreme = (get_setting(gid, "extreme_mode", "false") == "true")
         delete_wrong = (get_setting(gid, "delete_wrong", "true") == "true")
@@ -579,7 +628,7 @@ def create_app(version: str = "dev") -> FastAPI:
         lb_rows = "".join([f"<tr><td>{i+1}</td><td>{nm}</td><td style='text-align:right'>{r['cnt']}</td></tr>"
                            for i, (r, nm) in enumerate(zip(top, names))]) or "<tr><td colspan='3' class='muted'>No data</td></tr>"
 
-        header_right = f"<a class='button secondary' href='/?token={request.query_params.get('token','')}'>← Back</a>"
+        header_right = f"<a class='button secondary' href='/'>← Back</a>"
 
         body = f"""
           <div class="row">
@@ -605,7 +654,7 @@ def create_app(version: str = "dev") -> FastAPI:
                 <div>Current: <b>{st["last_number"]}</b></div>
                 <div>Next: <b>{(st["last_number"] or 0)+1}</b></div>
               </div>
-              <form method='post' action='/guild/{gid}/counting?token={request.query_params.get("token","")}'>
+              <form method='post' action='/guild/{gid}/counting'>
                 <label>Channel</label>
                 <select name='channel_id'>{options}</select>
                 <label>Set Count</label>
@@ -620,7 +669,7 @@ def create_app(version: str = "dev") -> FastAPI:
 
             <div class="card">
               <h2>Settings</h2>
-              <form method='post' action='/guild/{gid}/settings?token={request.query_params.get("token","")}'>
+              <form method='post' action='/guild/{gid}/settings'>
                 <label><input type='checkbox' name='extreme_mode' {"checked" if extreme else ""}> Extreme Mode</label>
                 <label><input type='checkbox' name='delete_wrong' {"checked" if delete_wrong else ""}> Delete wrong messages</label>
                 <div class='btn-row'><button class="button" type='submit'>Update</button></div>
@@ -637,7 +686,7 @@ def create_app(version: str = "dev") -> FastAPI:
 
             <div class="card">
               <h2>Server Management</h2>
-              <form method="post" action="/guild/{gid}/servercfg?token={request.query_params.get('token','')}">
+              <form method="post" action="/guild/{gid}/servercfg">
                 <label>Log Channel</label>
                 <select name="log_channel_id">{log_opts}</select>
 
@@ -659,16 +708,6 @@ def create_app(version: str = "dev") -> FastAPI:
                 </div>
               </form>
             </div>
-
-            <div class="card">
-              <h2>Secure Share</h2>
-              <p class="muted">Create a <b>single-use</b>, <b>time-limited</b> link for this guild page.</p>
-              <form method="post" action="/guild/{gid}/share?token={request.query_params.get('token','')}">
-                <label>TTL (seconds)</label>
-                <input type="number" name="ttl" value="900" min="60">
-                <div class="btn-row"><button class="button" type="submit">Generate one-time link</button></div>
-              </form>
-            </div>
           </div>
         """
 
@@ -676,16 +715,17 @@ def create_app(version: str = "dev") -> FastAPI:
 
     @app.post("/guild/{gid}/settings")
     async def update_settings(gid: int, request: Request, extreme_mode: str | None = Form(None),
-                              delete_wrong: str | None = Form(None), _: bool = Depends(require_token)):
+                              delete_wrong: str | None = Form(None), _auth: bool = Depends(require_user),
+                              _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
         set_setting(gid, "extreme_mode", "true" if extreme_mode == "on" else "false")
         set_setting(gid, "delete_wrong", "true" if delete_wrong == "on" else "false")
-        return RedirectResponse(url=f"/guild/{gid}?token={request.query_params.get('token','')}",
-                                status_code=HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=f"/guild/{gid}", status_code=HTTP_303_SEE_OTHER)
 
     @app.post("/guild/{gid}/counting")
     async def update_counting(gid: int, request: Request, channel_id: Optional[str] = Form(None),
                               set_count: Optional[str] = Form(None), reset: Optional[str] = Form(None),
-                              synccount: Optional[str] = Form(None), _: bool = Depends(require_token)):
+                              synccount: Optional[str] = Form(None), _auth: bool = Depends(require_user),
+                              _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid))):
         if channel_id:
             set_state(gid, channel_id=int(channel_id))
         if set_count is not None and set_count != "":
@@ -702,8 +742,7 @@ def create_app(version: str = "dev") -> FastAPI:
                     extreme = get_extreme_mode(gid)
                     last_num, last_user = await backfill_from_history(ch, extreme)
                     set_state(gid, last_number=last_num, last_user_id=last_user)
-        return RedirectResponse(url=f"/guild/{gid}?token={request.query_params.get('token','')}",
-                                status_code=HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=f"/guild/{gid}", status_code=HTTP_303_SEE_OTHER)
 
     @app.post("/guild/{gid}/servercfg")
     async def save_server_cfg(
@@ -713,7 +752,8 @@ def create_app(version: str = "dev") -> FastAPI:
         welcome_channel_id: Optional[str] = Form(None),
         welcome_message: Optional[str] = Form(None),
         autorole_id: Optional[str] = Form(None),
-        _: bool = Depends(require_token),
+        _auth: bool = Depends(require_user),
+        _member: bool = Depends(lambda req=request, gid=gid: require_guild_member(req, gid)),
     ):
         def _to_int_or_none(v: Optional[str]):
             try:
@@ -728,20 +768,6 @@ def create_app(version: str = "dev") -> FastAPI:
             welcome_message=(welcome_message or "").strip() or None,
             autorole_id=_to_int_or_none(autorole_id),
         )
-        return RedirectResponse(url=f"/guild/{gid}?token={request.query_params.get('token','')}",
-                                status_code=HTTP_303_SEE_OTHER)
-
-    @app.post("/guild/{gid}/share")
-    async def make_share_token(gid: int, request: Request, ttl: int = Form(900),
-                               _: bool = Depends(_require_token_with_gid)):
-        tok = secrets.token_urlsafe(24)
-        exp = int(time.time()) + int(ttl)
-        with get_conn() as c:
-            c.execute(
-                "INSERT INTO ephemeral_tokens(token, guild_id, expires_ts, used, created_ts) VALUES (?,?,?,?,?)",
-                (tok, gid, exp, 0, int(time.time()))
-            )
-        url = f"/guild/{gid}?ot_created=1&expires={exp}&ot_preview={tok}"
-        return RedirectResponse(url=url, status_code=HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=f"/guild/{gid}", status_code=HTTP_303_SEE_OTHER)
 
     return app
