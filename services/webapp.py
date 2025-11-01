@@ -19,6 +19,7 @@ __all__ = ["create_app", "set_bot", "set_brand_avatar"]
 # ---------------- Globals ----------------
 _bot = None
 _brand_avatar_url: str | None = None
+_START_TS = time.time()  # track uptime for /status
 
 def set_bot(bot):  # called by bot.py
     global _bot
@@ -201,6 +202,50 @@ def create_app(version: str = "dev") -> FastAPI:
         except Exception:
             return []
 
+    # ---------- Status helpers ----------
+    def _db_ok() -> bool:
+        try:
+            with get_conn() as c:
+                c.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
+    def _status_snapshot() -> dict:
+        # Discord state
+        bot_ok = False
+        guilds = 0
+        user_str = None
+        try:
+            if _bot and _bot.user:
+                bot_ok = True
+                user_str = f"{_bot.user} ({_bot.user.id})"
+                guilds = len(_bot.guilds or [])
+        except Exception:
+            bot_ok = False
+
+        cf_last_check = get_setting(0, "cf_last_check", None)
+
+        return {
+            "version": version,
+            "uptime_seconds": int(time.time() - _START_TS),
+            "discord": {
+                "connected": bot_ok,
+                "bot_user": user_str,
+                "guild_count": guilds,
+            },
+            "database": {"ok": _db_ok()},
+            "dashboard": {
+                "host": os.getenv("DASHBOARD_HOST", "127.0.0.1"),
+                "port": int(os.getenv("DASHBOARD_PORT", "5500")),
+            },
+            "curseforge": {
+                "enabled": "cogs.Curseforge_updates" in (os.getenv("COGS", "") or ""),
+                "last_check_ts": int(cf_last_check) if (cf_last_check and cf_last_check.isdigit()) else None,
+            },
+            "updated_ts": int(time.time()),
+        }
+
     # ---------- Base Styles (modern UI) ----------
     def base_head(title: str) -> str:
         return f"""
@@ -373,7 +418,7 @@ def create_app(version: str = "dev") -> FastAPI:
                     <div class="muted">${{entry.date || ''}}</div>
                   </div>
                   <ul style="margin:10px 0 0 18px">
-                   ${{(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}} 
+                    ${{(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}}
                   </ul>
                 </div>
               `).join('');
@@ -384,6 +429,73 @@ def create_app(version: str = "dev") -> FastAPI:
         </script>
         """
         return HTMLResponse(page_shell("Changelog • CelestiGuard", "", body, version, _bot_avatar_url(28)))
+
+    # ---------- Status API & Page ----------
+    @app.get("/api/status")
+    async def api_status():
+        return JSONResponse(_status_snapshot())
+
+    @app.get("/status", response_class=HTMLResponse)
+    async def status_page():
+        snap = _status_snapshot()
+        def yesno(b: bool) -> str:
+            return "✅ OK" if b else "⚠️ Issue"
+
+        affected_html = f"""
+          <ul style="margin:0 0 0 18px">
+            <li><b>Discord Gateway:</b> {yesno(bool(snap['discord']['connected']))}</li>
+            <li><b>Database:</b> {yesno(bool(snap['database']['ok']))}</li>
+            <li><b>Dashboard API:</b> ✅ OK</li>
+            <li><b>CurseForge Monitor:</b> {"Enabled" if snap["curseforge"]["enabled"] else "Disabled"}</li>
+          </ul>
+        """
+
+        cf_line = "—"
+        if snap["curseforge"]["last_check_ts"]:
+            cf_line = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(snap["curseforge"]["last_check_ts"]))
+
+        body = f"""
+          <div class="row" style="grid-template-columns:1fr">
+            <div class="card">
+              <h2>Status</h2>
+              <div class="muted" style="margin-bottom:8px">
+                Uptime: <b>{snap['uptime_seconds']}s</b> • Version: <b>{snap['version']}</b>
+              </div>
+
+              <div class="card" style="margin-top:12px">
+                <h3 style="margin:0 0 8px 0">Affected</h3>
+                {affected_html}
+              </div>
+
+              <div class="card" style="margin-top:12px">
+                <h3 style="margin:0 0 8px 0">Updated</h3>
+                <div class="muted" id="updated-ts">{time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(snap['updated_ts']))}</div>
+              </div>
+
+              <div class="card" style="margin-top:12px">
+                <h3 style="margin:0 0 8px 0">Details</h3>
+                <div class="muted">Discord: {snap['discord']['bot_user'] or "—"} • Guilds: {snap['discord']['guild_count']}</div>
+                <div class="muted">Dashboard: {snap['dashboard']['host']}:{snap['dashboard']['port']}</div>
+                <div class="muted">CurseForge last check: {cf_line}</div>
+              </div>
+            </div>
+          </div>
+
+          <script>
+            // Auto-refresh every 30s and update "Updated" field without reloading
+            setInterval(async () => {{
+              try {{
+                const r = await fetch('/api/status', {{cache:'no-store'}});
+                if (!r.ok) return;
+                const s = await r.json();
+                const d = new Date((s.updated_ts||0)*1000).toUTCString();
+                const el = document.getElementById('updated-ts');
+                if (el) el.textContent = d.replace('GMT', 'UTC');
+              }} catch (_e) {{}}
+            }}, 30000);
+          </script>
+        """
+        return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
     # ---------- Private (token-protected) dashboard ----------
     @app.get("/", response_class=HTMLResponse)
@@ -407,6 +519,7 @@ def create_app(version: str = "dev") -> FastAPI:
                 <div class="kv">
                   <a class="button secondary" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Open Dev Portal</a>
                   <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
+                  <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
                 </div>
               </div>
             </div>
