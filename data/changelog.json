@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.0.4.5",
+    "date": "2025-10-31",
+    "changes": [
+      "Fixed dashboard load error caused by unescaped braces in changelog template",
+      "Removed unsupported audioop-lts dependency to ensure compatibility with Python 3.12",
+      "Improved deployment stability and logging clarity on EC2",
+      "Refined internal redeploy script for safer updates"
+    ]
+  },
+  {
+    "version": "0.0.4.4",
+    "date": "2025-10-25",
+    "changes": [
+      "Initial CurseForge updates cog integration",
+      "Minor UI adjustments on dashboard"
+    ]
+  },
+  {
     "version": "0.0.4.4",
     "date": "2025-10-26",
     "changes": [
