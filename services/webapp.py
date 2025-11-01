@@ -91,15 +91,14 @@ def create_app(version: str = "dev") -> FastAPI:
     async def _member_dep(request: Request, gid: int) -> bool:
         return await require_guild_member(request, gid)
 
-        @app.get("/auth/login")
+          # ---- OAuth Routes ----
+    @app.get("/auth/login")
     async def auth_login(_: Request):
-        # Build Discord authorize URL
-        # NOTE: drop prompt=none to avoid "interaction required" and odd errors
         params = {
             "client_id": OAUTH_CLIENT_ID,
             "response_type": "code",
             "scope": "identify guilds",
-            "redirect_uri": OAUTH_REDIRECT_URI,  # MUST exactly match the app settings
+            "redirect_uri": OAUTH_REDIRECT_URI,
         }
         qp = httpx.QueryParams(params)
         url = f"https://discord.com/oauth2/authorize?{qp}"
@@ -110,12 +109,10 @@ def create_app(version: str = "dev") -> FastAPI:
         code = request.query_params.get("code")
         error = request.query_params.get("error")
         if error:
-            # Surface Discord error (e.g., access_denied)
             return JSONResponse({"stage": "authorize", "error": error}, status_code=400)
         if not code:
             raise HTTPException(status_code=400, detail="Missing code")
 
-        # Token exchange MUST be form-encoded and include the exact same redirect_uri
         form = {
             "client_id": OAUTH_CLIENT_ID,
             "client_secret": OAUTH_CLIENT_SECRET,
@@ -129,7 +126,6 @@ def create_app(version: str = "dev") -> FastAPI:
             tr = await client.post(f"{DISCORD_API}/oauth2/token", data=form, headers=headers)
 
         if tr.status_code != 200:
-            # Show Discord's explanation so we can see *why* it failed
             try:
                 body = tr.json()
             except Exception:
@@ -145,7 +141,6 @@ def create_app(version: str = "dev") -> FastAPI:
         if not access_token:
             return JSONResponse({"stage": "token", "error": "No access token in response"}, status_code=401)
 
-        # Fetch user + guilds and store in session
         auth_hdr = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient(timeout=10.0) as client:
             ur = await client.get(f"{DISCORD_API}/users/@me", headers=auth_hdr)
