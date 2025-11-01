@@ -53,7 +53,7 @@ def create_app(version: str = "dev") -> FastAPI:
         SessionMiddleware,
         secret_key=SESSION_SECRET,
         same_site="lax",
-        https_only=False,  # set True if serving HTTPS directly here (behind nginx it's fine to keep False)
+        https_only=False,  # set True if serving HTTPS directly here
     )
 
     # ---------- Auth (Discord OAuth) ----------
@@ -78,7 +78,6 @@ def create_app(version: str = "dev") -> FastAPI:
                                  headers={"Authorization": f"Bearer {token}"})
         if r.status_code == 200:
             gids = [str(g.get("id")) for g in r.json() if g.get("id")]
-            # store as list for JSON-serializable session
             request.session["guild_ids"] = gids
 
     async def require_guild_member(request: Request, gid: int):
@@ -173,11 +172,10 @@ def create_app(version: str = "dev") -> FastAPI:
             g = _bot.get_guild(gid)
             if g:
                 for r in g.roles:
-                    # skip @everyone (managed by guild) and bot-managed integration roles
+                    # skip @everyone and bot-managed roles
                     if r.is_default() or r.is_bot_managed():
                         continue
                     roles.append({"id": r.id, "name": r.name})
-        # highest first looks nicer
         roles.sort(key=lambda x: x["id"], reverse=True)
         return roles
 
@@ -188,13 +186,13 @@ def create_app(version: str = "dev") -> FastAPI:
 
         g = _bot.get_guild(gid)
 
-        # 1) Try cache (fast)
+        # 1) Try cache
         if g:
             m = g.get_member(user_id)
             if m:
                 return m.display_name
 
-        # 2) Try API fetch for member
+        # 2) Try API fetch
         if g:
             try:
                 m = await g.fetch_member(user_id)
@@ -245,7 +243,6 @@ def create_app(version: str = "dev") -> FastAPI:
         try:
             with p.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Normalize to a list of entries
                 if isinstance(data, dict):
                     data = [data]
                 return data if isinstance(data, list) else []
@@ -435,15 +432,23 @@ def create_app(version: str = "dev") -> FastAPI:
 
     @app.get("/api/changelog")
     async def api_changelog():
-        data = _load_changelog()
-        if not data:
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        return JSONResponse(data)
+        """
+        Always return a JSON list (possibly empty) and disable caching so the page
+        never gets stuck on stale responses.
+        """
+        data = _load_changelog() or []
+        return JSONResponse(
+            data,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.get("/changelog", response_class=HTMLResponse)
     async def changelog_page():
-        # Lightweight page that fetches /api/changelog and renders
-        body = f"""
+        # NOTE: NOT an f-string, so ${...} is left for JS template literals.
+        body = """
         <div class="row" style="grid-template-columns:1fr">
           <div class="card">
             <h2>Changelog</h2>
@@ -451,31 +456,40 @@ def create_app(version: str = "dev") -> FastAPI:
           </div>
         </div>
         <script>
-          (async function(){{
+          (async function(){
             const el = document.getElementById('cl');
-            try {{
-              const res = await fetch('/api/changelog', {{cache:'no-store'}});
-              if (!res.ok) throw new Error('not ok');
-              const items = await res.json();
-              if (!Array.isArray(items) || items.length===0) {{
+            try {
+              const res = await fetch('/api/changelog', {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-store' }
+              });
+              if (!res.ok) {
+                el.textContent = 'Failed to load changelog.';
+                return;
+              }
+              let items = [];
+              try { items = await res.json(); } catch { items = []; }
+
+              if (!Array.isArray(items) || items.length === 0) {
                 el.textContent = 'No changelog entries yet.';
                 return;
-              }}
+              }
+
               el.innerHTML = items.map(entry => `
                 <div class="card" style="margin-top:12px">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-                    <div><strong>\${{entry.version || 'unversioned'}}</strong></div>
-                    <div class="muted">\${{entry.date || ''}}</div>
+                    <div><strong>${entry.version || 'unversioned'}</strong></div>
+                    <div class="muted">${entry.date || ''}</div>
                   </div>
                   <ul style="margin:10px 0 0 18px">
-                    \${{(entry.changes || []).map(c => `<li>\${{c}}</li>`).join('')}}
+                    ${(entry.changes || []).map(c => `<li>${c}</li>`).join('')}
                   </ul>
                 </div>
               `).join('');
-            }} catch (e) {{
+            } catch (_e) {
               el.textContent = 'Failed to load changelog.';
-            }}
-          }})();
+            }
+          })();
         </script>
         """
         return HTMLResponse(page_shell("Changelog • CelestiGuard", "", body, version, _bot_avatar_url(28)))
