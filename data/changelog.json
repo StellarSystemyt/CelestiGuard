@@ -1,5 +1,15 @@
 [
   {
+    "version":"0.0.4.7",
+    "date":"2025-11-02",
+    "changes": [
+      "OAuth: Removed prompt=none to fix “Invalid Form Body” on mobile / in-app browsers.",
+      "Security: Added CSRF state generation and verification for the Discord OAuth flow.",
+      "UX: New /auth/start interstitial to help users open the flow in their system browser if Discord's in-app webview misbehaves.",
+      "Reliability: Callback now returns clearer JSON on token/userinfo failures and disables caching for error responses."
+    ]
+  },
+  {
   "version": "0.0.4.6",
   "date": "2025-11-01",
   "changes": [
@@ -12,8 +22,7 @@
   "notes": [
     "BREAKING: Remove token auth. Set SESSION_SECRET, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI."
   ]
-},
-
+  },
   {
     "version": "0.0.4.5",
     "date": "2025-10-31",
