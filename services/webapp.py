@@ -625,7 +625,8 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
           <ul style="margin:0 0 0 18px">
             <li><b>Discord Gateway:</b> {yesno(bool(snap['discord']['connected']))}</li>
             <li><b>Database:</b> {yesno(bool(snap['database']['ok']))}</li>
-            <li><b>Dashboard API:</b> ✅ OK</li>
+           <!-- <li><b>Dashboard API:</b> ✅ OK</li> -->
+            <li><b>Dashboard API:</b> ❌ Down</li>
             <li><b>CurseForge Monitor:</b> {"Enabled" if snap["curseforge"]["enabled"] else "Disabled"}</li>
           </ul>
         """
