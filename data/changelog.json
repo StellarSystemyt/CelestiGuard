@@ -1,5 +1,14 @@
 [
   {
+
+  "version": "0.0.4.7",
+  "date": "2025-11-02",
+  "changes": [
+    "Hardened Discord OAuth: fail fast on bad env config, enforce CSRF state, clearer token exchange errors.",
+    "Added optional ?debug=1 on /auth/callback to surface Discord error payloads for troubleshooting."
+  ]
+  },
+  {
     "version":"0.0.4.7",
     "date":"2025-11-02",
     "changes": [
