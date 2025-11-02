@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, asyncio, json
+import os, time, asyncio, json, secrets
 from pathlib import Path
 from typing import Optional
 
@@ -91,25 +91,59 @@ def create_app(version: str = "dev") -> FastAPI:
     async def _member_dep(request: Request, gid: int) -> bool:
         return await require_guild_member(request, gid)
 
-          # ---- OAuth Routes ----
-    @app.get("/auth/login")
-    async def auth_login(_: Request):
+    # ---- OAuth helpers ----
+    def _authorize_url(request: Request) -> str:
+        # Per Discord docs: space-delimited scopes; httpx encodes to %20
+        state = secrets.token_urlsafe(24)
+        request.session["oauth_state"] = state
+        request.session["oauth_state_ts"] = int(time.time())
         params = {
             "client_id": OAUTH_CLIENT_ID,
             "response_type": "code",
             "scope": "identify guilds",
             "redirect_uri": OAUTH_REDIRECT_URI,
+            "state": state,            # CSRF protection
+            # NOTE: deliberately no "prompt" param (fixes mobile/webview issues)
         }
-        qp = httpx.QueryParams(params)
-        url = f"https://discord.com/oauth2/authorize?{qp}"
-        return RedirectResponse(url)
+        return f"https://discord.com/oauth2/authorize?{httpx.QueryParams(params)}"
+
+    # ---- OAuth Routes ----
+    @app.get("/auth/start", response_class=HTMLResponse)
+    async def auth_start(request: Request):
+        # Interstitial page helpful for Discord in-app browser; gives a clean link.
+        body = """
+        <div style="max-width:560px;margin:40px auto;font-family:system-ui,Segoe UI,Roboto,Arial">
+          <h2>Sign in with Discord</h2>
+          <p>If you're inside Discord's in-app browser and hit problems, tap the ••• menu and
+             <b>Open in Browser</b>, then try again.</p>
+          <p><a href="/auth/login" style="display:inline-block;padding:10px 14px;border-radius:10px;
+             background:#5865F2;color:#fff;text-decoration:none">Continue to Discord</a></p>
+        </div>
+        """
+        return HTMLResponse(body)
+
+    @app.get("/auth/login")
+    async def auth_login(request: Request):
+        return RedirectResponse(_authorize_url(request))
 
     @app.get("/auth/callback")
     async def auth_callback(request: Request):
+        # Spec: https://discord.com/developers/docs/topics/oauth2#authorization-code-grant
         code = request.query_params.get("code")
         error = request.query_params.get("error")
+        state = request.query_params.get("state")
+        saved = request.session.get("oauth_state")
+
         if error:
             return JSONResponse({"stage": "authorize", "error": error}, status_code=400)
+
+        # CSRF/state check
+        if not state or not saved or state != saved:
+            return JSONResponse({"stage": "authorize", "error": "Invalid or missing state"}, status_code=400)
+        # Consume the state
+        request.session.pop("oauth_state", None)
+        request.session.pop("oauth_state_ts", None)
+
         if not code:
             raise HTTPException(status_code=400, detail="Missing code")
 
@@ -162,6 +196,7 @@ def create_app(version: str = "dev") -> FastAPI:
             except Exception:
                 request.session["guild_ids"] = []
 
+        # Done -> dashboard
         return RedirectResponse("/")
 
     @app.get("/auth/logout")
