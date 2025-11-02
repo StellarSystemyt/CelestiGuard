@@ -107,52 +107,103 @@ def create_app(version: str = "dev") -> FastAPI:
         }
         return f"https://discord.com/oauth2/authorize?{httpx.QueryParams(params)}"
 
-    # ---- OAuth Routes ----
-    @app.get("/auth/start", response_class=HTMLResponse)
-    async def auth_start(request: Request):
-        # Interstitial page helpful for Discord in-app browser; gives a clean link.
-        body = """
-        <div style="max-width:560px;margin:40px auto;font-family:system-ui,Segoe UI,Roboto,Arial">
-          <h2>Sign in with Discord</h2>
-          <p>If you're inside Discord's in-app browser and hit problems, tap the ••• menu and
-             <b>Open in Browser</b>, then try again.</p>
-          <p><a href="/auth/login" style="display:inline-block;padding:10px 14px;border-radius:10px;
-             background:#5865F2;color:#fff;text-decoration:none">Continue to Discord</a></p>
-        </div>
+        # ---- OAuth Routes ----
+    def _env_problem() -> str | None:
+        problems = []
+        if not OAUTH_CLIENT_ID or "YOUR_" in OAUTH_CLIENT_ID:
+            problems.append("OAUTH_CLIENT_ID is missing/placeholder.")
+        if not OAUTH_CLIENT_SECRET or "YOUR_" in OAUTH_CLIENT_SECRET:
+            problems.append("OAUTH_CLIENT_SECRET is missing/placeholder.")
+        if not OAUTH_REDIRECT_URI or "YOUR_" in OAUTH_REDIRECT_URI:
+            problems.append("OAUTH_REDIRECT_URI is missing/placeholder.")
+        # Discord requires exact match (scheme, host, path) with your app settings
+        # Example: https://dash.yourdomain.com/auth/callback  (no trailing slash if not in portal)
+        return "\n".join(problems) if problems else None
+
+    def _mini_help_page(title: str, body_html: str) -> HTMLResponse:
+        html = f"""
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>{title}</title>
+        <style>
+          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }}
+          code, kbd {{ background:#1112; padding:2px 4px; border-radius:4px }}
+          .card {{ border:1px solid #e5e7eb; border-radius:12px; padding:16px; }}
+          .err {{ color:#b91c1c }}
+        </style></head><body>
+          <h1>{title}</h1>
+          <div class="card">{body_html}</div>
+        </body></html>
         """
-        return HTMLResponse(body)
+        return HTMLResponse(html, status_code=400)
 
     @app.get("/auth/login")
     async def auth_login(request: Request):
-        return RedirectResponse(_authorize_url(request))
+        # Validate env first
+        prob = _env_problem()
+        if prob:
+            return _mini_help_page(
+                "Discord OAuth not configured",
+                f"""
+                <p class="err"><strong>Fix your environment variables:</strong></p>
+                <pre>{prob}</pre>
+                <p>Set (examples):</p>
+                <pre>
+export OAUTH_CLIENT_ID=123456789012345678
+export OAUTH_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
+                </pre>
+                <p>Make sure the redirect URL matches your Discord app <em>exactly</em>.</p>
+                """
+            )
+
+        # Create CSRF state
+        state = os.urandom(16).hex()
+        request.session["oauth_state"] = state
+
+        params = {
+            "client_id": OAUTH_CLIENT_ID,
+            "response_type": "code",
+            "scope": "identify guilds",
+            "redirect_uri": OAUTH_REDIRECT_URI,  # must exactly match Discord portal
+            "state": state,
+            "prompt": "none",
+        }
+        qp = httpx.QueryParams(params)
+        url = f"https://discord.com/oauth2/authorize?{qp}"
+        return RedirectResponse(url)
 
     @app.get("/auth/callback")
     async def auth_callback(request: Request):
-        # Spec: https://discord.com/developers/docs/topics/oauth2#authorization-code-grant
+        # Optional debug mode: /auth/callback?debug=1 to see raw errors
+        debug = request.query_params.get("debug") == "1"
         code = request.query_params.get("code")
         error = request.query_params.get("error")
         state = request.query_params.get("state")
-        saved = request.session.get("oauth_state")
 
         if error:
-            return JSONResponse({"stage": "authorize", "error": error}, status_code=400)
-
-        # CSRF/state check
-        if not state or not saved or state != saved:
-            return JSONResponse({"stage": "authorize", "error": "Invalid or missing state"}, status_code=400)
-        # Consume the state
-        request.session.pop("oauth_state", None)
-        request.session.pop("oauth_state_ts", None)
+            detail = {"stage": "authorize", "error": error}
+            return JSONResponse(detail, status_code=400)
 
         if not code:
             raise HTTPException(status_code=400, detail="Missing code")
+
+        # State check (prevents code replay / wrong flows)
+        sess_state = request.session.get("oauth_state")
+        request.session.pop("oauth_state", None)  # single-use
+        if not sess_state or not state or state != sess_state:
+            return JSONResponse({"stage": "authorize", "error": "Invalid state"}, status_code=400)
+
+        # Env sanity again
+        prob = _env_problem()
+        if prob:
+            return JSONResponse({"stage": "env", "error": prob}, status_code=500)
 
         form = {
             "client_id": OAUTH_CLIENT_ID,
             "client_secret": OAUTH_CLIENT_SECRET,
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": OAUTH_REDIRECT_URI,
+            "redirect_uri": OAUTH_REDIRECT_URI,  # must match exactly
         }
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
@@ -160,15 +211,22 @@ def create_app(version: str = "dev") -> FastAPI:
             tr = await client.post(f"{DISCORD_API}/oauth2/token", data=form, headers=headers)
 
         if tr.status_code != 200:
+            payload = None
             try:
-                body = tr.json()
+                payload = tr.json()
             except Exception:
-                body = {"raw": tr.text}
-            return JSONResponse(
-                {"stage": "token", "status": tr.status_code, "discord": body},
-                status_code=401,
-                headers={"Cache-Control": "no-store"},
-            )
+                payload = {"raw": tr.text}
+            # Common reasons:
+            # - code already used/expired
+            # - redirect_uri mismatch (exact string mismatch)
+            # - wrong client_id/secret
+            detail = {
+                "stage": "token",
+                "status": tr.status_code,
+                "discord": payload,
+                "hint": "Ensure redirect URI EXACTLY matches in Discord's portal and env, and use fresh /auth/login each time.",
+            }
+            return JSONResponse(detail, status_code=400 if not debug else 200, headers={"Cache-Control": "no-store"})
 
         tok = tr.json()
         access_token = tok.get("access_token")
@@ -181,12 +239,14 @@ def create_app(version: str = "dev") -> FastAPI:
             gr = await client.get(f"{DISCORD_API}/users/@me/guilds", headers=auth_hdr)
 
         if ur.status_code != 200:
+            why = None
             try:
                 why = ur.json()
             except Exception:
                 why = {"raw": ur.text}
             return JSONResponse({"stage": "userinfo", "discord": why}, status_code=401)
 
+        # Success
         request.session.clear()
         request.session["access_token"] = access_token
         request.session["user"] = ur.json()
@@ -196,13 +256,13 @@ def create_app(version: str = "dev") -> FastAPI:
             except Exception:
                 request.session["guild_ids"] = []
 
-        # Done -> dashboard
         return RedirectResponse("/")
 
     @app.get("/auth/logout")
     async def auth_logout(request: Request):
         request.session.clear()
         return RedirectResponse("/")
+
 
     # ---------- Helpers ----------
     def _top(gid: int):
