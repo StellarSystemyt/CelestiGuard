@@ -1,6 +1,16 @@
 [
   {
 
+  "version": "0.0.4.8",
+  "date": "2025-11-11",
+  "changes": [
+    "Renamed 'target_id' → 'user_id' in moderation actions (ban, mute, etc.)",
+    "Fixes Pylance errors for missing or mismatched parameters",
+    "Ensures DB logging uses consistent user_id field for target users"
+  ]
+  },
+  {
+
   "version": "0.0.4.7",
   "date": "2025-11-02",
   "changes": [
