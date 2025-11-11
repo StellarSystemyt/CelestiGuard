@@ -67,7 +67,7 @@ class Moderation(commands.Cog):
             add_case(
                 guild_id=gid,
                 action="BAN",
-                target_id=int(member.id),
+                user_id=int(member.id),
                 moderator_id=int(inter.user.id),
                 reason=reason or "",
             )
@@ -113,7 +113,7 @@ class Moderation(commands.Cog):
             add_case(
                 guild_id=gid,
                 action="UNBAN",
-                target_id=int(user.id),
+                user_id=int(user.id),
                 moderator_id=int(inter.user.id),
                 reason=reason or "",
             )
