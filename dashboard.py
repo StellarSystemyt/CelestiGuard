@@ -5,9 +5,12 @@ import os
 import json
 import secrets
 import time
+import asyncio
+import threading
 from pathlib import Path
 from typing import Any, List
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -168,14 +171,20 @@ def robots():
 
 
 # --- OAuth (Discord) ---
-DISCORD_AUTH  = "https://discord.com/api/oauth2/authorize"
-CLIENT_ID     = os.getenv("OAUTH_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "")  # for token exchange later if/when you add it
-REDIRECT_URI  = os.getenv("OAUTH_REDIRECT_URI", "https://celestiguard.xyz/auth/callback")
-SCOPES        = ["identify", "guilds"]
+DISCORD_AUTH   = "https://discord.com/api/oauth2/authorize"
+DISCORD_TOKEN  = "https://discord.com/api/oauth2/token"
+CLIENT_ID      = os.getenv("OAUTH_CLIENT_ID", "")
+CLIENT_SECRET  = os.getenv("OAUTH_CLIENT_SECRET", "")  # used in token exchange
+REDIRECT_URI   = os.getenv("OAUTH_REDIRECT_URI", "https://celestiguard.xyz/auth/callback")
+SCOPES         = ["identify", "guilds"]
 
 # one-time state store to avoid loops (swap for Redis if you want)
 _used_states: dict[str, float] = {}
+
+# prevent duplicate token exchanges (rate limit protection)
+_used_codes: dict[str, float] = {}
+_code_lock = threading.Lock()
+
 
 @app.get("/auth/login")
 def auth_login():
@@ -193,8 +202,46 @@ def auth_login():
     resp.set_cookie("oauth_state", state, max_age=300, secure=True, httponly=True, samesite="lax", path="/")
     return resp
 
+
+async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
+    """Exchange authorization code for tokens. Retries a few times on rate limit."""
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    attempts = 0
+    while True:
+        attempts += 1
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                DISCORD_TOKEN,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if resp.status_code == 200:
+            return resp.json()
+        # Basic backoff on rate limit (Discord sometimes replies 429 or 400 w/ rate-limit phrasing)
+        if resp.status_code in (400, 429):
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after is not None:
+                try:
+                    wait = float(retry_after)
+                except ValueError:
+                    wait = 1.0
+            else:
+                wait = {1: 0.5, 2: 1.0, 3: 2.0}.get(attempts, 0)
+            if attempts <= 3 and wait > 0:
+                await asyncio.sleep(min(wait, 5.0))
+                continue
+        # Bubble up error details for troubleshooting
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+
 @app.get("/auth/callback")
-def auth_callback(request: Request, code: str | None = None, state: str | None = None):
+async def auth_callback(request: Request, code: str | None = None, state: str | None = None):
     if not code or not state:
         raise HTTPException(400, "Missing code")
 
@@ -207,18 +254,38 @@ def auth_callback(request: Request, code: str | None = None, state: str | None =
         resp = RedirectResponse("/", status_code=303)
         resp.delete_cookie("oauth_state", path="/")
         return resp
-    _used_states[state] = time.time()
 
-    # TODO: exchange `code` for tokens (Discord token endpoint), then create your session
-    # token = ...
-    # user  = ...
+    # Prevent duplicate token exchange for the same authorization code
+    with _code_lock:
+        if code in _used_codes:
+            resp = RedirectResponse("/", status_code=303)
+            resp.delete_cookie("oauth_state", path="/")
+            return resp
+        _used_codes[code] = time.time()
+
+    # Exchange the code once (with light backoff)
+    try:
+        token_payload = await exchange_code_for_token(code, REDIRECT_URI)
+    except HTTPException as e:
+        # Friendly JSON for now; you can render a template instead
+        resp = JSONResponse(
+            {"stage": "token", "status": e.status_code, "detail": "token_exchange_failed"},
+            status_code=e.status_code,
+        )
+        resp.delete_cookie("oauth_state", path="/")
+        return resp
+
+    # TODO: use token_payload["access_token"] to fetch user info and create your own session
     # session_value = ...
+
+    # Mark state used after successful exchange
+    _used_states[state] = time.time()
 
     resp = RedirectResponse("/", status_code=303)  # 303 avoids retry loops
     resp.delete_cookie("oauth_state", path="/")
     resp.set_cookie(
         "session", "your-session-token",
         max_age=60*60*24*7, secure=True, httponly=True, samesite="lax", path="/"
-        # domain="celestiguard.xyz"  # optional; omit if unsure
+        # domain="celestiguard.xyz"  # optional
     )
     return resp
