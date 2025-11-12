@@ -1,12 +1,14 @@
 [
   {
-
   "version": "0.0.4.8",
   "date": "2025-11-11",
   "changes": [
     "Renamed 'target_id' → 'user_id' in moderation actions (ban, mute, etc.)",
     "Fixes Pylance errors for missing or mismatched parameters",
-    "Ensures DB logging uses consistent user_id field for target users"
+    "Ensures DB logging uses consistent user_id field for target users",
+    "Made template and static directory paths absolute using BASE_DIR to ensure FastAPI finds resources when running under systemd/AWS environments",
+    "Escaped nested f-string braces in fallback HTML to fix Pylance syntax errors",
+    "Verified index.html and static assets render correctly on production"
   ]
   },
   {
