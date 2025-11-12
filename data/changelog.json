@@ -6,7 +6,10 @@
       "Dashboard: made template/static paths absolute for reliable AWS/systemd runs.",
       "Fixed fallback HTML f-string escaping in inline changelog renderer.",
       "Added Discord OAuth routes with one-time state + 303 callback to prevent login loops.",
-       "Added favicon/robots endpoints to reduce noisy 404s."
+       "Added favicon/robots endpoints to reduce noisy 404s.",
+       "Exchange code once with httpx; handle rate limits (Retry-After/backoff)",
+       "Cache used codes and enforce one-time state, return 303 to avoid loops",
+       "Keep SameSite 'lax' casing correct and maintain existing dashboard routes"
     ]
   },
   {
