@@ -8,6 +8,7 @@ import time
 import asyncio
 import threading
 import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List
@@ -41,11 +42,50 @@ elif templates_dir.is_dir():
 
 templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.is_dir() else None
 
+# --- Persistent dedupe for OAuth (shared across workers) ---
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+OAUTH_DB_PATH = DATA_DIR / "oauth_cache.db"
+
+def _oauth_db():
+    conn = sqlite3.connect(str(OAUTH_DB_PATH), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS used_states (
+            state TEXT PRIMARY KEY,
+            ts INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS used_codes (
+            code TEXT PRIMARY KEY,
+            ts INTEGER NOT NULL
+        )
+    """)
+    return conn
+
+def mark_state_used_once(state: str) -> bool:
+    """True if first time we've seen this state; False if already used."""
+    with _oauth_db() as c:
+        try:
+            c.execute("INSERT INTO used_states(state, ts) VALUES(?, strftime('%s','now'))", (state,))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+def mark_code_used_once(code: str) -> bool:
+    """True if first time we've seen this code; False if already used."""
+    with _oauth_db() as c:
+        try:
+            c.execute("INSERT INTO used_codes(code, ts) VALUES(?, strftime('%s','now'))", (code,))
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 # --- Small helpers ---
 def _find_changelog_path() -> Path | None:
     candidates = [
-        BASE_DIR / "data" / "changelog.json",
+        DATA_DIR / "changelog.json",
         BASE_DIR / "changelog.json",
         templates_dir / "changelog.json",
     ]
@@ -54,24 +94,20 @@ def _find_changelog_path() -> Path | None:
             return p
     return None
 
-
 def _no_store_headers() -> dict[str, str]:
     return {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     }
 
-
 # --- Health & Version ---
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True, "version": VERSION})
 
-
 @app.get("/api/version")
 async def api_version():
     return JSONResponse({"version": VERSION})
-
 
 # --- API endpoint for changelog ---
 @app.get("/api/changelog")
@@ -95,7 +131,6 @@ async def api_changelog():
         except Exception:
             items = []
     return JSONResponse(items, headers=_no_store_headers())
-
 
 # --- Webpage route ---
 @app.get("/", response_class=HTMLResponse)
@@ -168,7 +203,6 @@ async def home(request: Request):
     """
     return HTMLResponse(html)
 
-
 # --- Small niceties to reduce log noise ---
 @app.get("/favicon.ico")
 def favicon():
@@ -178,7 +212,6 @@ def favicon():
 def robots():
     return HTMLResponse("User-agent: *\nDisallow:\n", media_type="text/plain")
 
-
 # --- OAuth (Discord) ---
 DISCORD_AUTH   = "https://discord.com/api/oauth2/authorize"
 DISCORD_TOKEN  = "https://discord.com/api/oauth2/token"
@@ -187,16 +220,13 @@ CLIENT_SECRET  = os.getenv("OAUTH_CLIENT_SECRET", "")  # used in token exchange
 REDIRECT_URI   = os.getenv("OAUTH_REDIRECT_URI", "https://celestiguard.xyz/auth/callback")
 SCOPES         = ["identify", "guilds"]
 
-# one-time state store to avoid loops (swap for Redis if you want)
-_used_states: dict[str, float] = {}
-
-# prevent duplicate token exchanges (rate limit protection)
-_used_codes: dict[str, float] = {}
+# still keep light in-memory checks (good fast path), but persistence is the fence
+_used_states_mem: dict[str, float] = {}
+_used_codes_mem: dict[str, float] = {}
 _code_lock = threading.Lock()
 
 # Optional: cookie domain override (leave empty to omit)
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "").strip() or None
-
 
 @app.get("/auth/login")
 def auth_login(request: Request):
@@ -221,12 +251,11 @@ def auth_login(request: Request):
     resp.set_cookie(
         "oauth_state", state,
         max_age=300, secure=True, httponly=True, samesite="lax", path="/",
-        domain=COOKIE_DOMAIN  # None means it won't be set
+        domain=COOKIE_DOMAIN
     )
     resp.headers["X-Debug-Stage"] = "auth/login"
     resp.headers["X-Debug-State"] = state
     return resp
-
 
 async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
     """Exchange authorization code for tokens. Retries a few times on rate limit."""
@@ -264,7 +293,6 @@ async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
         # Bubble up error details for troubleshooting
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
-
 @app.get("/auth/callback")
 async def auth_callback(request: Request, code: str | None = None, state: str | None = None):
     if not code or not state:
@@ -276,23 +304,40 @@ async def auth_callback(request: Request, code: str | None = None, state: str | 
         log.info("auth_callback -> invalid state | cookie=%s query=%s", cookie_state, state)
         raise HTTPException(400, "Invalid state")
 
-    # idempotent: ignore repeats so browsers/preloads don't loop
-    if state in _used_states:
-        log.info("auth_callback -> state already used | state=%s", state)
+    # Fast-path memory dedupe (helps when single worker)
+    if state in _used_states_mem:
+        log.info("auth_callback -> state already used (mem) | state=%s", state)
         resp = RedirectResponse("/", status_code=303)
         resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
-        resp.headers["X-Debug-Stage"] = "auth/callback-already-used"
+        resp.headers["X-Debug-Stage"] = "auth/callback-already-used-mem"
         return resp
 
-    # Prevent duplicate token exchange for the same authorization code
     with _code_lock:
-        if code in _used_codes:
-            log.info("auth_callback -> code already used | code=%s", code[:8])
+        if code in _used_codes_mem:
+            log.info("auth_callback -> code already used (mem) | code=%s", code[:8])
             resp = RedirectResponse("/", status_code=303)
             resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
-            resp.headers["X-Debug-Stage"] = "auth/callback-code-reused"
+            resp.headers["X-Debug-Stage"] = "auth/callback-code-reused-mem"
             return resp
-        _used_codes[code] = time.time()
+
+    # Durable, cross-worker idempotency (SQLite)
+    if not mark_state_used_once(state):
+        log.info("auth_callback -> state already used (db) | state=%s", state)
+        resp = RedirectResponse("/", status_code=303)
+        resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
+        resp.headers["X-Debug-Stage"] = "auth/callback-already-used-db"
+        return resp
+
+    if not mark_code_used_once(code):
+        log.info("auth_callback -> code already used (db) | code=%s", code[:8])
+        resp = RedirectResponse("/", status_code=303)
+        resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
+        resp.headers["X-Debug-Stage"] = "auth/callback-code-reused-db"
+        return resp
+
+    # Mark memory maps once we've passed the DB fence
+    _used_states_mem[state] = time.time()
+    _used_codes_mem[code] = time.time()
 
     log.info("auth_callback -> exchanging code once | code=%s state=%s", code[:8], state)
     try:
@@ -307,11 +352,8 @@ async def auth_callback(request: Request, code: str | None = None, state: str | 
         resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
         return resp
 
-    # TODO: look up user with token_payload["access_token"] and create your real session value
+    # TODO: get user with token_payload["access_token"], then create your real session
     session_value = "sess_" + secrets.token_urlsafe(24)
-
-    # Mark state used after successful exchange
-    _used_states[state] = time.time()
 
     log.info("auth_callback -> success, setting session and redirecting home | session=%s...", session_value[:12])
     resp = RedirectResponse("/", status_code=303)  # 303 avoids retry loops
@@ -323,7 +365,6 @@ async def auth_callback(request: Request, code: str | None = None, state: str | 
     )
     resp.headers["X-Debug-Stage"] = "auth/callback-success"
     return resp
-
 
 # --- Debug: see what cookies the browser is actually sending ---
 @app.get("/debug/session")
