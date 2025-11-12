@@ -6,13 +6,16 @@
       "Dashboard: made template/static paths absolute for reliable AWS/systemd runs.",
       "Fixed fallback HTML f-string escaping in inline changelog renderer.",
       "Added Discord OAuth routes with one-time state + 303 callback to prevent login loops.",
-       "Added favicon/robots endpoints to reduce noisy 404s.",
-       "Exchange code once with httpx; handle rate limits (Retry-After/backoff)",
-       "Cache used codes and enforce one-time state, return 303 to avoid loops",
-       "Keep SameSite 'lax' casing correct and maintain existing dashboard routes",
-       "Auth: guard /auth/login when session exists; prevent repeated OAuth starts.",
-       "Auth: keep one-time state and code dedupe to stop callback loops and token rate limits.",
-       "Debug: add /debug/session and X-Debug headers to verify cookies."
+      "Added favicon/robots endpoints to reduce noisy 404s.",
+      "Exchange code once with httpx; handle rate limits (Retry-After/backoff)",
+      "Cache used codes and enforce one-time state, return 303 to avoid loops",
+      "Keep SameSite 'lax' casing correct and maintain existing dashboard routes",
+      "Auth: guard /auth/login when session exists; prevent repeated OAuth starts.",
+      "Auth: keep one-time state and code dedupe to stop callback loops and token rate limits.",
+      "Debug: add /debug/session and X-Debug headers to verify cookies.",
+      "Auth: persistent OAuth dedupe via SQLite to prevent multi-worker token floods.",
+      "Auth: login guard and idempotent callback with 303 redirect to stop loops.",
+      "Debug: /debug/session and debug headers to verify cookie and flow."
     ]
   },
   {

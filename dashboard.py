@@ -105,6 +105,11 @@ def _no_store_headers() -> dict[str, str]:
 async def health():
     return JSONResponse({"ok": True, "version": VERSION})
 
+# Allow HEAD / so probes don’t get 405
+@app.head("/")
+def home_head():
+    return Response(status_code=200)
+
 @app.get("/api/version")
 async def api_version():
     return JSONResponse({"version": VERSION})
@@ -151,12 +156,6 @@ async def home(request: Request):
         # Debug header to quickly see if the browser sent a session
         resp.headers["X-Debug-Session"] = "present" if request.cookies.get("session") else "absent"
         return resp
-from fastapi import Response
-
-@app.head("/")
-def home_head():
-    # Return 200 for HEAD so Nginx/probes don't see 405
-    return Response(status_code=200)
 
     # Fallback minimal HTML if Jinja templates aren't available
     html = f"""
