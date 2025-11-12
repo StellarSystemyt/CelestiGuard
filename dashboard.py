@@ -1,6 +1,6 @@
 # dashboard.py
 from __future__ import annotations
-
+from pathlib import Path
 import json
 import os
 from pathlib import Path
@@ -17,8 +17,9 @@ VERSION = os.getenv("CELESTIGUARD_VERSION", "dev")
 app = FastAPI(title=APP_TITLE)
 
 # --- Templates & Static ---
-templates_dir = Path("templates")
-static_dir = Path("static")
+BASE_DIR = Path(__file__).resolve().parent
+templates_dir = BASE_DIR / "templates"
+static_dir = BASE_DIR / "static"
 
 # Mount static at /static if present; if not, try to mount templates for legacy assets.
 if static_dir.is_dir():
@@ -142,7 +143,7 @@ async def home(request: Request):
                     <span class="muted">${{entry.date || ''}}</span>
                   </div>
                   <ul style="margin:10px 0 0 18px">
-                    ${(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}
+                    ${{(entry.changes || []).map(c => `<li>${{c}}</li>`).join('')}}
                   </ul>
                 </div>
               `).join('');
