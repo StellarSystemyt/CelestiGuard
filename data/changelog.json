@@ -8,7 +8,9 @@
     "Ensures DB logging uses consistent user_id field for target users",
     "Made template and static directory paths absolute using BASE_DIR to ensure FastAPI finds resources when running under systemd/AWS environments",
     "Escaped nested f-string braces in fallback HTML to fix Pylance syntax errors",
-    "Verified index.html and static assets render correctly on production"
+    "Verified index.html and static assets render correctly on production",
+    "Resolved Pylance type error in `add_case` by ensuring `latrowid` always returns an integer.",
+    "Added a fallback query to guarentee a valid case ID is returned even if SQLite returns `None`."
   ]
   },
   {
