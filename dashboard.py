@@ -151,6 +151,12 @@ async def home(request: Request):
         # Debug header to quickly see if the browser sent a session
         resp.headers["X-Debug-Session"] = "present" if request.cookies.get("session") else "absent"
         return resp
+from fastapi import Response
+
+@app.head("/")
+def home_head():
+    # Return 200 for HEAD so Nginx/probes don't see 405
+    return Response(status_code=200)
 
     # Fallback minimal HTML if Jinja templates aren't available
     html = f"""
