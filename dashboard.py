@@ -7,6 +7,8 @@ import secrets
 import time
 import asyncio
 import threading
+import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List
 
@@ -21,6 +23,10 @@ APP_TITLE = "CelestiGuard Dashboard"
 VERSION = os.getenv("CELESTIGUARD_VERSION", "dev")
 
 app = FastAPI(title=APP_TITLE)
+
+# Basic logger
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("celestiguard")
 
 # --- Templates & Static (absolute paths so systemd/AWS can't break them) ---
 BASE_DIR = Path(__file__).resolve().parent
@@ -99,7 +105,7 @@ async def home(request: Request):
     that fetches /api/changelog and shows it.
     """
     if templates:
-        return templates.TemplateResponse(
+        resp = templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
@@ -107,6 +113,9 @@ async def home(request: Request):
                 "version": VERSION,
             },
         )
+        # Debug header to quickly see if the browser sent a session
+        resp.headers["X-Debug-Session"] = "present" if request.cookies.get("session") else "absent"
+        return resp
 
     # Fallback minimal HTML if Jinja templates aren't available
     html = f"""
@@ -185,9 +194,18 @@ _used_states: dict[str, float] = {}
 _used_codes: dict[str, float] = {}
 _code_lock = threading.Lock()
 
+# Optional: cookie domain override (leave empty to omit)
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "").strip() or None
+
 
 @app.get("/auth/login")
-def auth_login():
+def auth_login(request: Request):
+    # HARD STOP: if a session already exists, don't start a new OAuth flow
+    if request.cookies.get("session"):
+        resp = RedirectResponse("/", status_code=303)
+        resp.headers["X-Debug-Stage"] = "auth/login-session-exists"
+        return resp
+
     state = secrets.token_urlsafe(24)
     params = {
         "response_type": "code",
@@ -197,9 +215,16 @@ def auth_login():
         "state": state,
         "prompt": "none",  # or "consent"
     }
-    resp = RedirectResponse(f"{DISCORD_AUTH}?{urlencode(params)}", status_code=302)
-    # bind state to client (5-minute TTL)
-    resp.set_cookie("oauth_state", state, max_age=300, secure=True, httponly=True, samesite="lax", path="/")
+    url = f"{DISCORD_AUTH}?{urlencode(params)}"
+    log.info("auth_login -> redirecting to Discord | state=%s", state)
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie(
+        "oauth_state", state,
+        max_age=300, secure=True, httponly=True, samesite="lax", path="/",
+        domain=COOKIE_DOMAIN  # None means it won't be set
+    )
+    resp.headers["X-Debug-Stage"] = "auth/login"
+    resp.headers["X-Debug-State"] = state
     return resp
 
 
@@ -243,49 +268,69 @@ async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
 @app.get("/auth/callback")
 async def auth_callback(request: Request, code: str | None = None, state: str | None = None):
     if not code or not state:
+        log.info("auth_callback -> missing code/state | code=%s state=%s", code, state)
         raise HTTPException(400, "Missing code")
 
     cookie_state = request.cookies.get("oauth_state")
     if not cookie_state or cookie_state != state:
+        log.info("auth_callback -> invalid state | cookie=%s query=%s", cookie_state, state)
         raise HTTPException(400, "Invalid state")
 
     # idempotent: ignore repeats so browsers/preloads don't loop
     if state in _used_states:
+        log.info("auth_callback -> state already used | state=%s", state)
         resp = RedirectResponse("/", status_code=303)
-        resp.delete_cookie("oauth_state", path="/")
+        resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
+        resp.headers["X-Debug-Stage"] = "auth/callback-already-used"
         return resp
 
     # Prevent duplicate token exchange for the same authorization code
     with _code_lock:
         if code in _used_codes:
+            log.info("auth_callback -> code already used | code=%s", code[:8])
             resp = RedirectResponse("/", status_code=303)
-            resp.delete_cookie("oauth_state", path="/")
+            resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
+            resp.headers["X-Debug-Stage"] = "auth/callback-code-reused"
             return resp
         _used_codes[code] = time.time()
 
-    # Exchange the code once (with light backoff)
+    log.info("auth_callback -> exchanging code once | code=%s state=%s", code[:8], state)
     try:
         token_payload = await exchange_code_for_token(code, REDIRECT_URI)
     except HTTPException as e:
-        # Friendly JSON for now; you can render a template instead
+        log.warning("auth_callback -> token exchange failed | status=%s", e.status_code)
         resp = JSONResponse(
             {"stage": "token", "status": e.status_code, "detail": "token_exchange_failed"},
             status_code=e.status_code,
+            headers={"X-Debug-Stage": "auth/callback-exchange-failed"},
         )
-        resp.delete_cookie("oauth_state", path="/")
+        resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
         return resp
 
-    # TODO: use token_payload["access_token"] to fetch user info and create your own session
-    # session_value = ...
+    # TODO: look up user with token_payload["access_token"] and create your real session value
+    session_value = "sess_" + secrets.token_urlsafe(24)
 
     # Mark state used after successful exchange
     _used_states[state] = time.time()
 
+    log.info("auth_callback -> success, setting session and redirecting home | session=%s...", session_value[:12])
     resp = RedirectResponse("/", status_code=303)  # 303 avoids retry loops
-    resp.delete_cookie("oauth_state", path="/")
+    resp.delete_cookie("oauth_state", path="/", domain=COOKIE_DOMAIN)
     resp.set_cookie(
-        "session", "your-session-token",
-        max_age=60*60*24*7, secure=True, httponly=True, samesite="lax", path="/"
-        # domain="celestiguard.xyz"  # optional
+        "session", session_value,
+        max_age=60*60*24*7, secure=True, httponly=True, samesite="lax", path="/",
+        domain=COOKIE_DOMAIN
     )
+    resp.headers["X-Debug-Stage"] = "auth/callback-success"
     return resp
+
+
+# --- Debug: see what cookies the browser is actually sending ---
+@app.get("/debug/session")
+def debug_session(request: Request):
+    return JSONResponse({
+        "time": datetime.utcnow().isoformat() + "Z",
+        "has_session": bool(request.cookies.get("session")),
+        "session_prefix": (request.cookies.get("session") or "")[:12],
+        "has_oauth_state_cookie": bool(request.cookies.get("oauth_state")),
+    }, headers={"X-Debug-Stage": "debug/session"})
