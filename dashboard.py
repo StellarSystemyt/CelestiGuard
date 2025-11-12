@@ -1,31 +1,33 @@
 # dashboard.py
 from __future__ import annotations
-from pathlib import Path
-import json
+
 import os
+import json
+import secrets
+import time
 from pathlib import Path
 from typing import Any, List
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from urllib.parse import urlencode
 
 APP_TITLE = "CelestiGuard Dashboard"
 VERSION = os.getenv("CELESTIGUARD_VERSION", "dev")
 
 app = FastAPI(title=APP_TITLE)
 
-# --- Templates & Static ---
+# --- Templates & Static (absolute paths so systemd/AWS can't break them) ---
 BASE_DIR = Path(__file__).resolve().parent
 templates_dir = BASE_DIR / "templates"
 static_dir = BASE_DIR / "static"
 
-# Mount static at /static if present; if not, try to mount templates for legacy assets.
 if static_dir.is_dir():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 elif templates_dir.is_dir():
-    # For older setups where assets live in templates/
+    # Legacy assets might live in templates/
     app.mount("/static", StaticFiles(directory=str(templates_dir)), name="static")
 
 templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.is_dir() else None
@@ -34,9 +36,9 @@ templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.is_di
 # --- Small helpers ---
 def _find_changelog_path() -> Path | None:
     candidates = [
-        Path("data/changelog.json"),
-        Path("changelog.json"),
-        Path("templates/changelog.json"),
+        BASE_DIR / "data" / "changelog.json",
+        BASE_DIR / "changelog.json",
+        templates_dir / "changelog.json",
     ]
     for p in candidates:
         if p.is_file():
@@ -75,7 +77,6 @@ async def api_changelog():
         try:
             with p.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Normalize to list
             if isinstance(data, dict):
                 items = [data]
             elif isinstance(data, list):
@@ -84,8 +85,6 @@ async def api_changelog():
                 items = []
         except Exception:
             items = []
-
-    # Never 404; the page logic can show "No entries" nicely.
     return JSONResponse(items, headers=_no_store_headers())
 
 
@@ -156,3 +155,70 @@ async def home(request: Request):
     </html>
     """
     return HTMLResponse(html)
+
+
+# --- Small niceties to reduce log noise ---
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
+@app.get("/robots.txt", response_class=HTMLResponse)
+def robots():
+    return HTMLResponse("User-agent: *\nDisallow:\n", media_type="text/plain")
+
+
+# --- OAuth (Discord) ---
+DISCORD_AUTH  = "https://discord.com/api/oauth2/authorize"
+CLIENT_ID     = os.getenv("OAUTH_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "")  # for token exchange later if/when you add it
+REDIRECT_URI  = os.getenv("OAUTH_REDIRECT_URI", "https://celestiguard.xyz/auth/callback")
+SCOPES        = ["identify", "guilds"]
+
+# one-time state store to avoid loops (swap for Redis if you want)
+_used_states: dict[str, float] = {}
+
+@app.get("/auth/login")
+def auth_login():
+    state = secrets.token_urlsafe(24)
+    params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "scope": " ".join(SCOPES),
+        "state": state,
+        "prompt": "none",  # or "consent"
+    }
+    resp = RedirectResponse(f"{DISCORD_AUTH}?{urlencode(params)}", status_code=302)
+    # bind state to client (5-minute TTL)
+    resp.set_cookie("oauth_state", state, max_age=300, secure=True, httponly=True, samesite="lax", path="/")
+    return resp
+
+@app.get("/auth/callback")
+def auth_callback(request: Request, code: str | None = None, state: str | None = None):
+    if not code or not state:
+        raise HTTPException(400, "Missing code")
+
+    cookie_state = request.cookies.get("oauth_state")
+    if not cookie_state or cookie_state != state:
+        raise HTTPException(400, "Invalid state")
+
+    # idempotent: ignore repeats so browsers/preloads don't loop
+    if state in _used_states:
+        resp = RedirectResponse("/", status_code=303)
+        resp.delete_cookie("oauth_state", path="/")
+        return resp
+    _used_states[state] = time.time()
+
+    # TODO: exchange `code` for tokens (Discord token endpoint), then create your session
+    # token = ...
+    # user  = ...
+    # session_value = ...
+
+    resp = RedirectResponse("/", status_code=303)  # 303 avoids retry loops
+    resp.delete_cookie("oauth_state", path="/")
+    resp.set_cookie(
+        "session", "your-session-token",
+        max_age=60*60*24*7, secure=True, httponly=True, samesite="lax", path="/"
+        # domain="celestiguard.xyz"  # optional; omit if unsure
+    )
+    return resp
