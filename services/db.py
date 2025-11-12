@@ -212,7 +212,7 @@ def get_guild_config(guild_id: int) -> dict:
 import json, time
 
 def add_case(guild_id: int, user_id: int, moderator_id: int, action: str,
-             reason: str | None = None, extra: dict | None = None) -> int:
+             reason: Optional[str] = None, extra: Optional[dict] = None) -> int:
     with get_conn() as c:
         cur = c.execute(
             "INSERT INTO moderation_cases(guild_id,user_id,moderator_id,action,reason,created_ts,extra_json)"
@@ -220,7 +220,10 @@ def add_case(guild_id: int, user_id: int, moderator_id: int, action: str,
             (guild_id, user_id, moderator_id, action, reason or "", int(time.time()),
              json.dumps(extra or {}))
         )
-        return cur.lastrowid
+        new_id = cur.lastrowid
+        if new_id is None:
+            new_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return int(new_id)
 
 def list_cases(guild_id: int, limit: int = 25):
     with get_conn() as c:
