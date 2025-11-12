@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.0.4.8",
+    "date": "2025-11-12",
+    "changes": [
+      "Dashboard: made template/static paths absolute for reliable AWS/systemd runs.",
+      "Fixed fallback HTML f-string escaping in inline changelog renderer.",
+      "Added Discord OAuth routes with one-time state + 303 callback to prevent login loops.",
+       "Added favicon/robots endpoints to reduce noisy 404s."
+    ]
+  },
+  {
   "version": "0.0.4.8",
   "date": "2025-11-11",
   "changes": [
