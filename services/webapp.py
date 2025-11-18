@@ -784,47 +784,35 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-    # ---------- Root (soft-protected) ----------
+        # ---------- Root (soft-protected) ----------
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         logged_in = _is_logged_in(request)
 
-        items_html = ""
-        if logged_in and _bot and _bot.guilds:
-            cards = []
-            for g in _bot.guilds:
-                cards.append(f"""
-                <a class="card-link" href='/guild/{g.id}'>
-                  <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
-                  <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
-                </a>""")
-            items_html = "".join(cards)
-        elif logged_in:
-            items_html = "<div class='muted'>No guilds yet. Invite the bot.</div>"
-        else:
-            items_html = """
-            <div class="card">
-              <h2>Welcome to CelestiGuard</h2>
-              <div class="muted" style="margin-bottom:12px">
-                Log in with Discord to manage counting channels, settings, and more.
-              </div>
-              <a class="button" href="/auth/login">Login with Discord</a>
-            </div>
-            """
-
         if logged_in:
+            # build guild cards
+            items_html = ""
+            if _bot and _bot.guilds:
+                cards: list[str] = []
+                for g in _bot.guilds:
+                    cards.append(
+                        f"""
+                        <a class="card-link" href="/guild/{g.id}">
+                          <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
+                          <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
+                        </a>
+                        """
+                    )
+                items_html = "".join(cards)
+            else:
+                items_html = "<div class='muted'>No guilds yet. Invite the bot.</div>"
+
             header_right = """
               <a class="button secondary" href="/auth/logout">Logout</a>
               <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
               <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
             """
-        else:
-            header_right = """
-              <a class="button" href="/auth/login">Login with Discord</a>
-              <a class="button secondary" href="/status" target="_blank" rel="noreferrer">Status</a>
-            """
 
-        if logged_in:
             body = f"""
               <div class="row">
                 <div class="card" style="grid-column:1/-1">
@@ -833,7 +821,6 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
                       <h2 style="margin:0 0 4px 0">Dashboard</h2>
                       <div class="muted">Manage counting channels, sync, and settings.</div>
                     </div>
-                    <div class="kv">{header_right}</div>
                   </div>
                 </div>
               </div>
@@ -841,16 +828,30 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
                 {items_html}
               </div>
             """
-            header_right_for_shell = ""  # already embedded in body
-        else:
-            body = f"""
-              <div class="row" style="grid-template-columns:1fr">
-                {items_html}
-              </div>
-            """
-            header_right_for_shell = header_right
 
-        return HTMLResponse(page_shell("CelestiGuard", header_right_for_shell, body, version, _bot_avatar_url(28)))
+            # nav has logout/changelog/status, body has dashboard + guilds
+            return HTMLResponse(page_shell("CelestiGuard", header_right, body, version, _bot_avatar_url(28)))
+
+        # not logged in: show welcome + login button
+        header_right = """
+          <a class="button" href="/auth/login">Login with Discord</a>
+          <a class="button secondary" href="/status" target="_blank" rel="noreferrer">Status</a>
+        """
+
+        body = """
+          <div class="row" style="grid-template-columns:1fr">
+            <div class="card">
+              <h2>Welcome to CelestiGuard</h2>
+              <div class="muted" style="margin-bottom:12px">
+                Log in with Discord to manage counting channels, settings, and more.
+              </div>
+              <a class="button" href="/auth/login">Login with Discord</a>
+            </div>
+          </div>
+        """
+
+        return HTMLResponse(page_shell("CelestiGuard", header_right, body, version, _bot_avatar_url(28)))
+
 
     # ---------- Guild (hard-protected) ----------
     @app.get("/guild/{gid}", response_class=HTMLResponse)
