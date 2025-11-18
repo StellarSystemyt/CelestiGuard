@@ -610,107 +610,165 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Changelog • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-    # ---------- Status API & Page (public) ----------
+        # ---------- Status API & Page (public) ----------
     @app.get("/api/status")
     async def api_status():
         return JSONResponse(_status_snapshot())
 
     @app.get("/status", response_class=HTMLResponse)
     async def status_page():
-        snap = _status_snapshot()
-        def yesno(b: bool) -> str:
-            return "✅ OK" if b else "⚠️ Issue"
-
-        affected_html = f"""
-          <ul style="margin:0 0 0 18px">
-            <li><b>Discord Gateway:</b> {yesno(bool(snap['discord']['connected']))}</li>
-            <li><b>Database:</b> {yesno(bool(snap['database']['ok']))}</li>
-           <!-- <li><b>Dashboard API:</b> ✅ OK</li> -->
-            <li><b>Dashboard API:</b> ❌ Down</li>
-            <li><b>CurseForge Monitor:</b> {"Enabled" if snap["curseforge"]["enabled"] else "Disabled"}</li>
-          </ul>
-        """
-
-        cf_line = "—"
-        if snap["curseforge"]["last_check_ts"]:
-            cf_line = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(snap["curseforge"]["last_check_ts"]))
-
-        body = f"""
+        # NOTE: body is a plain string (NOT an f-string), so { } are safe for JS.
+        body = """
           <div class="row" style="grid-template-columns:1fr">
             <div class="card">
               <h2>Status</h2>
               <div class="muted" style="margin-bottom:8px">
-                Uptime: <b>{snap['uptime_seconds']}s</b> • Version: <b>{snap['version']}</b>
+                Uptime: <b id="uptime">loading…</b>
+                • Version: <b id="version">loading…</b>
               </div>
 
               <div class="card" style="margin-top:12px">
                 <h3 style="margin:0 0 8px 0">Affected</h3>
-                {affected_html}
+                <ul style="margin:0 0 0 18px">
+                  <li><b>Discord Gateway:</b>
+                    <span id="discord-status" class="status-pill">loading…</span>
+                  </li>
+                  <li><b>Database:</b>
+                    <span id="db-status" class="status-pill">loading…</span>
+                  </li>
+                  <li><b>Dashboard API:</b>
+                    <span id="dashboard-status" class="status-pill">loading…</span>
+                  </li>
+                  <li><b>CurseForge Monitor:</b>
+                    <span id="cf-enabled" class="status-pill">loading…</span>
+                  </li>
+                </ul>
               </div>
 
               <div class="card" style="margin-top:12px">
                 <h3 style="margin:0 0 8px 0">Updated</h3>
-                <div class="muted" id="updated-ts">{time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(snap['updated_ts']))}</div>
+                <div class="muted" id="updated-ts">loading…</div>
               </div>
 
               <div class="card" style="margin-top:12px">
                 <h3 style="margin:0 0 8px 0">Details</h3>
-                <div class="muted">Discord: {snap['discord']['bot_user'] or "—"} • Guilds: {snap['discord']['guild_count']}</div>
-                <div class="muted">Dashboard: {snap['dashboard']['host']}:{snap['dashboard']['port']}</div>
-                <div class="muted">CurseForge last check: {cf_line}</div>
+                <div class="muted">
+                  Discord: <span id="discord-user">loading…</span>
+                  • Guilds: <span id="discord-guilds">–</span>
+                </div>
+                <div class="muted">
+                  Dashboard: <span id="dash-hostport">loading…</span>
+                </div>
+                <div class="muted">
+                  CurseForge last check: <span id="cf-last">–</span>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top:12px">
+                <h3 style="margin:0 0 8px 0">Last Error</h3>
+                <div id="last-error-body" class="muted">No recent errors.</div>
               </div>
             </div>
           </div>
 
           <script>
-            // Auto-refresh every 30s and update "Updated" field without reloading
-            setInterval(async () => {{
-              try {{
-                const r = await fetch('/api/status', {{cache:'no-store'}});
+            function setStatusPill(id, ok, labelOk, labelBad) {
+              const el = document.getElementById(id);
+              if (!el) return;
+              el.textContent = ok ? (labelOk || 'OK') : (labelBad || 'Issue');
+              el.classList.remove('status-ok', 'status-bad', 'status-warn');
+              el.classList.add(ok ? 'status-ok' : 'status-bad');
+            }
+
+            async function refreshStatus() {
+              try {
+                const r = await fetch('/api/status', { cache: 'no-store' });
                 if (!r.ok) return;
                 const s = await r.json();
-                const d = new Date((s.updated_ts||0)*1000).toUTCString();
-                const el = document.getElementById('updated-ts');
-                if (el) el.textContent = d.replace('GMT', 'UTC');
-              }} catch (_e) {{}}
-            }}, 30000);
+
+                // Uptime & version
+                const uptime = document.getElementById('uptime');
+                const version = document.getElementById('version');
+                if (uptime && typeof s.uptime_seconds === 'number') {
+                  uptime.textContent = s.uptime_seconds + 's';
+                }
+                if (version && s.version) {
+                  version.textContent = s.version;
+                }
+
+                // Affected states
+                const discordConnected = !!(s.discord && s.discord.connected);
+                const dbOk = !!(s.database && s.database.ok);
+                const cfEnabled = !!(s.curseforge && s.curseforge.enabled);
+
+                setStatusPill('discord-status', discordConnected, 'Up', 'Issue');
+                setStatusPill('db-status', dbOk, 'Up', 'Issue');
+                setStatusPill('cf-enabled', cfEnabled, 'Enabled', 'Disabled');
+
+                // Dashboard API is considered OK if this request succeeded
+                setStatusPill('dashboard-status', true, 'Up', 'Issue');
+
+                // Updated timestamp
+                const updated = document.getElementById('updated-ts');
+                if (updated && typeof s.updated_ts === 'number') {
+                  const d = new Date(s.updated_ts * 1000).toUTCString().replace('GMT', 'UTC');
+                  updated.textContent = d;
+                }
+
+                // Details
+                const dUser = document.getElementById('discord-user');
+                const dGuilds = document.getElementById('discord-guilds');
+                const dashHP = document.getElementById('dash-hostport');
+                const cfLast = document.getElementById('cf-last');
+
+                if (dUser) {
+                  dUser.textContent = (s.discord && s.discord.bot_user) || '—';
+                }
+                if (dGuilds) {
+                  dGuilds.textContent = (s.discord && s.discord.guild_count != null)
+                    ? s.discord.guild_count
+                    : '0';
+                }
+                if (dashHP) {
+                  const h = (s.dashboard && s.dashboard.host) || '—';
+                  const p = (s.dashboard && s.dashboard.port) || '—';
+                  dashHP.textContent = h + ':' + p;
+                }
+                if (cfLast) {
+                  if (s.curseforge && s.curseforge.last_check_ts) {
+                    const d = new Date(s.curseforge.last_check_ts * 1000).toUTCString().replace('GMT', 'UTC');
+                    cfLast.textContent = d;
+                  } else {
+                    cfLast.textContent = '—';
+                  }
+                }
+
+                // Last error
+                const errBox = document.getElementById('last-error-body');
+                if (errBox) {
+                  const le = s.last_error;
+                  if (le && le.message) {
+                    const comp = le.component || 'unknown';
+                    errBox.textContent = '[' + comp + '] ' + le.message;
+                    errBox.classList.remove('status-ok');
+                    errBox.classList.add('status-bad');
+                  } else {
+                    errBox.textContent = 'No recent errors.';
+                    errBox.classList.remove('status-bad');
+                  }
+                }
+
+              } catch (e) {
+                console.error('status refresh failed', e);
+              }
+            }
+
+            // Initial load + refresh every 30s
+            refreshStatus();
+            setInterval(refreshStatus, 30000);
           </script>
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
-
-    # ---------- Private (OAuth-protected) dashboard ----------
-    @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, _auth: bool = Depends(require_user)):
-        items = []
-        if _bot and _bot.guilds:
-            for g in _bot.guilds:
-                items.append(f"""
-                <a class="card-link" href='/guild/{g.id}'>
-                  <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
-                  <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
-                </a>""")
-        header_right = """
-          <a class="button secondary" href="/auth/logout">Logout</a>
-          <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
-          <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
-        """
-        body = f"""
-          <div class="row">
-            <div class="card" style="grid-column:1/-1">
-              <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
-                <div>
-                  <h2 style="margin:0 0 4px 0">Dashboard</h2>
-                  <div class="muted">Manage counting channels, sync, and settings.</div>
-                </div>
-                <div class="kv">{header_right}</div>
-              </div>
-            </div>
-          </div>
-          <div class="grid" style="margin-top:16px">
-            {''.join(items) if items else '<div class="muted">No guilds yet. Invite the bot.</div>'}
-          </div>
-        """
-        return HTMLResponse(page_shell("CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
     @app.get("/guild/{gid}", response_class=HTMLResponse)
     async def guild_view(
