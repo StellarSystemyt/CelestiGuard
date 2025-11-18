@@ -770,6 +770,41 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
+# ---------- Private (OAuth-protected) dashboard ----------
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request, _auth: bool = Depends(require_user)):
+        items = []
+        if _bot and _bot.guilds:
+            for g in _bot.guilds:
+                items.append(f"""
+                <a class="card-link" href='/guild/{g.id}'>
+                  <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
+                  <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
+                </a>""")
+        header_right = """
+          <a class="button secondary" href="/auth/logout">Logout</a>
+          <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
+          <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
+        """
+        body = f"""
+          <div class="row">
+            <div class="card" style="grid-column:1/-1">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+                <div>
+                  <h2 style="margin:0 0 4px 0">Dashboard</h2>
+                  <div class="muted">Manage counting channels, sync, and settings.</div>
+                </div>
+                <div class="kv">{header_right}</div>
+              </div>
+            </div>
+          </div>
+          <div class="grid" style="margin-top:16px">
+            {''.join(items) if items else '<div class="muted">No guilds yet. Invite the bot.</div>'}
+          </div>
+        """
+        return HTMLResponse(page_shell("CelestiGuard", "", body, version, _bot_avatar_url(28)))
+
+
     @app.get("/guild/{gid}", response_class=HTMLResponse)
     async def guild_view(
         gid: int,
