@@ -23,14 +23,17 @@ _bot = None
 _brand_avatar_url: str | None = None
 _START_TS = time.time()  # track uptime for /status
 
+
 def set_bot(bot):  # called by bot.py
     global _bot
     _bot = bot
+
 
 def set_brand_avatar(url: str | None):
     """Optional override for the dashboard logo/avatar."""
     global _brand_avatar_url
     _brand_avatar_url = url
+
 
 # ---------------- App Factory ----------------
 def create_app(version: str = "dev") -> FastAPI:
@@ -52,14 +55,19 @@ def create_app(version: str = "dev") -> FastAPI:
         SessionMiddleware,
         secret_key=SESSION_SECRET,
         same_site="lax",
-        https_only=False,  # set True if serving HTTPS directly here
+        https_only=False,  # behind real HTTPS / reverse proxy is fine
     )
 
     # ---------- Auth (Discord OAuth) ----------
     def _is_logged_in(request: Request) -> bool:
         return "user" in request.session and "access_token" in request.session
-    
+
     async def require_user(request: Request):
+        """
+        Hard auth gate for protected routes (guild pages, POST handlers, etc).
+        Root ("/") is intentionally NOT protected by this to avoid infinite
+        redirect loops that hammer Discord's OAuth endpoint.
+        """
         if not _is_logged_in(request):
             # redirect to /auth/login (which jumps to Discord)
             raise HTTPException(
@@ -97,22 +105,6 @@ def create_app(version: str = "dev") -> FastAPI:
         return await require_guild_member(request, gid)
 
     # ---- OAuth helpers ----
-    def _authorize_url(request: Request) -> str:
-        # Per Discord docs: space-delimited scopes; httpx encodes to %20
-        state = secrets.token_urlsafe(24)
-        request.session["oauth_state"] = state
-        request.session["oauth_state_ts"] = int(time.time())
-        params = {
-            "client_id": OAUTH_CLIENT_ID,
-            "response_type": "code",
-            "scope": "identify guilds",
-            "redirect_uri": OAUTH_REDIRECT_URI,
-            "state": state,            # CSRF protection
-            # NOTE: deliberately no "prompt" param (fixes mobile/webview issues)
-        }
-        return f"https://discord.com/oauth2/authorize?{httpx.QueryParams(params)}"
-
-    # ---- OAuth Routes ----
     def _env_problem() -> str | None:
         problems = []
         if not OAUTH_CLIENT_ID or "YOUR_" in OAUTH_CLIENT_ID:
@@ -124,6 +116,23 @@ def create_app(version: str = "dev") -> FastAPI:
         # Discord requires exact match (scheme, host, path) with your app settings
         # Example: https://dash.yourdomain.com/auth/callback  (no trailing slash if not in portal)
         return "\n".join(problems) if problems else None
+
+    def _authorize_url(request: Request) -> str:
+        """
+        Build Discord OAuth2 authorize URL and store CSRF state in session.
+        """
+        state = secrets.token_urlsafe(24)
+        request.session["oauth_state"] = state
+        request.session["oauth_state_ts"] = int(time.time())
+        params = {
+            "client_id": OAUTH_CLIENT_ID,
+            "response_type": "code",
+            "scope": "identify guilds",
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "state": state,  # CSRF protection
+            # no "prompt" param: let Discord decide, prevents some odd loops
+        }
+        return f"https://discord.com/oauth2/authorize?{httpx.QueryParams(params)}"
 
     def _mini_help_page(title: str, body_html: str) -> HTMLResponse:
         html = f"""
@@ -165,20 +174,8 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
                 """
             )
 
-        # Create CSRF state
-        state = os.urandom(16).hex()
-        request.session["oauth_state"] = state
-
-        params = {
-            "client_id": OAUTH_CLIENT_ID,
-            "response_type": "code",
-            "scope": "identify guilds",
-            "redirect_uri": OAUTH_REDIRECT_URI,  # must exactly match Discord portal
-            "state": state,
-            "prompt": "none",
-        }
-        qp = httpx.QueryParams(params)
-        url = f"https://discord.com/oauth2/authorize?{qp}"
+        # Build authorize URL (also sets oauth_state in session)
+        url = _authorize_url(request)
         return RedirectResponse(url)
 
     @app.get("/auth/callback")
@@ -235,7 +232,11 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
                 "discord": payload,
                 "hint": "Ensure redirect URI EXACTLY matches in Discord's portal and env, and use fresh /auth/login each time.",
             }
-            return JSONResponse(detail, status_code=400 if not debug else 200, headers={"Cache-Control": "no-store"})
+            return JSONResponse(
+                detail,
+                status_code=400 if not debug else 200,
+                headers={"Cache-Control": "no-store"},
+            )
 
         tok = tr.json()
         access_token = tok.get("access_token")
@@ -255,7 +256,7 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
                 why = {"raw": ur.text}
             return JSONResponse({"stage": "userinfo", "discord": why}, status_code=401)
 
-        # Success
+        # Success: reset session and store tokens/user data
         request.session.clear()
         request.session["access_token"] = access_token
         request.session["user"] = ur.json()
@@ -272,6 +273,10 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         request.session.clear()
         return RedirectResponse("/")
 
+    @app.get("/debug/session")
+    async def debug_session(request: Request):
+        """Helper endpoint to see what's actually in the session cookie."""
+        return JSONResponse({"session": dict(request.session)})
 
     # ---------- Helpers ----------
     def _top(gid: int):
@@ -619,7 +624,7 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Changelog • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-        # ---------- Status API & Page (public) ----------
+    # ---------- Status API & Page (public) ----------
     @app.get("/api/status")
     async def api_status():
         return JSONResponse(_status_snapshot())
@@ -779,41 +784,75 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-# ---------- Private (OAuth-protected) dashboard ----------
+    # ---------- Root (soft-protected) ----------
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, _auth: bool = Depends(require_user)):
-        items = []
-        if _bot and _bot.guilds:
+    async def index(request: Request):
+        logged_in = _is_logged_in(request)
+
+        items_html = ""
+        if logged_in and _bot and _bot.guilds:
+            cards = []
             for g in _bot.guilds:
-                items.append(f"""
+                cards.append(f"""
                 <a class="card-link" href='/guild/{g.id}'>
                   <div style="font-weight:700; font-size:16px; margin-bottom:4px">{g.name}</div>
                   <div class="muted">ID: {g.id} • Members: {getattr(g, 'member_count', '—')}</div>
                 </a>""")
-        header_right = """
-          <a class="button secondary" href="/auth/logout">Logout</a>
-          <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
-          <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
-        """
-        body = f"""
-          <div class="row">
-            <div class="card" style="grid-column:1/-1">
-              <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
-                <div>
-                  <h2 style="margin:0 0 4px 0">Dashboard</h2>
-                  <div class="muted">Manage counting channels, sync, and settings.</div>
-                </div>
-                <div class="kv">{header_right}</div>
+            items_html = "".join(cards)
+        elif logged_in:
+            items_html = "<div class='muted'>No guilds yet. Invite the bot.</div>"
+        else:
+            items_html = """
+            <div class="card">
+              <h2>Welcome to CelestiGuard</h2>
+              <div class="muted" style="margin-bottom:12px">
+                Log in with Discord to manage counting channels, settings, and more.
               </div>
+              <a class="button" href="/auth/login">Login with Discord</a>
             </div>
-          </div>
-          <div class="grid" style="margin-top:16px">
-            {''.join(items) if items else '<div class="muted">No guilds yet. Invite the bot.</div>'}
-          </div>
-        """
-        return HTMLResponse(page_shell("CelestiGuard", "", body, version, _bot_avatar_url(28)))
+            """
 
+        if logged_in:
+            header_right = """
+              <a class="button secondary" href="/auth/logout">Logout</a>
+              <a class="button" href="/changelog" target="_blank" rel="noreferrer">Changelog</a>
+              <a class="button" href="/status" target="_blank" rel="noreferrer">Status</a>
+            """
+        else:
+            header_right = """
+              <a class="button" href="/auth/login">Login with Discord</a>
+              <a class="button secondary" href="/status" target="_blank" rel="noreferrer">Status</a>
+            """
 
+        if logged_in:
+            body = f"""
+              <div class="row">
+                <div class="card" style="grid-column:1/-1">
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+                    <div>
+                      <h2 style="margin:0 0 4px 0">Dashboard</h2>
+                      <div class="muted">Manage counting channels, sync, and settings.</div>
+                    </div>
+                    <div class="kv">{header_right}</div>
+                  </div>
+                </div>
+              </div>
+              <div class="grid" style="margin-top:16px">
+                {items_html}
+              </div>
+            """
+            header_right_for_shell = ""  # already embedded in body
+        else:
+            body = f"""
+              <div class="row" style="grid-template-columns:1fr">
+                {items_html}
+              </div>
+            """
+            header_right_for_shell = header_right
+
+        return HTMLResponse(page_shell("CelestiGuard", header_right_for_shell, body, version, _bot_avatar_url(28)))
+
+    # ---------- Guild (hard-protected) ----------
     @app.get("/guild/{gid}", response_class=HTMLResponse)
     async def guild_view(
         gid: int,
@@ -865,10 +904,12 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         # Resolve names for leaderboard
         name_tasks = [_display_name(gid, int(r["user_id"])) for r in top]
         names = await asyncio.gather(*name_tasks) if name_tasks else []
-        lb_rows = "".join([f"<tr><td>{i+1}</td><td>{nm}</td><td style='text-align:right'>{r['cnt']}</td></tr>"
-                           for i, (r, nm) in enumerate(zip(top, names))]) or "<tr><td colspan='3' class='muted'>No data</td></tr>"
+        lb_rows = "".join([
+            f"<tr><td>{i+1}</td><td>{nm}</td><td style='text-align:right'>{r['cnt']}</td></tr>"
+            for i, (r, nm) in enumerate(zip(top, names))
+        ]) or "<tr><td colspan='3' class='muted'>No data</td></tr>"
 
-        header_right = f"<a class='button secondary' href='/'>← Back</a>"
+        header_right = "<a class='button secondary' href='/'>← Back</a>"
 
         body = f"""
           <div class="row">
