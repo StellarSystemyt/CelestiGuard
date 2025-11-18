@@ -32,7 +32,6 @@ def set_brand_avatar(url: str | None):
     global _brand_avatar_url
     _brand_avatar_url = url
 
-
 # ---------------- App Factory ----------------
 def create_app(version: str = "dev") -> FastAPI:
     """
@@ -59,11 +58,15 @@ def create_app(version: str = "dev") -> FastAPI:
     # ---------- Auth (Discord OAuth) ----------
     def _is_logged_in(request: Request) -> bool:
         return "user" in request.session and "access_token" in request.session
-
+    
     async def require_user(request: Request):
         if not _is_logged_in(request):
             # redirect to /auth/login (which jumps to Discord)
-            raise HTTPException(status_code=302, detail="login", headers={"Location": "/auth/login"})
+            raise HTTPException(
+                status_code=302,
+                detail="login",
+                headers={"Location": "/auth/login"},
+            )
         return True
 
     async def _ensure_guilds_cached(request: Request):
@@ -74,8 +77,10 @@ def create_app(version: str = "dev") -> FastAPI:
             return
         token = request.session["access_token"]
         async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(f"{DISCORD_API}/users/@me/guilds",
-                                 headers={"Authorization": f"Bearer {token}"})
+            r = await client.get(
+                f"{DISCORD_API}/users/@me/guilds",
+                headers={"Authorization": f"Bearer {token}"},
+            )
         if r.status_code == 200:
             gids = [str(g.get("id")) for g in r.json() if g.get("id")]
             request.session["guild_ids"] = gids
@@ -107,7 +112,7 @@ def create_app(version: str = "dev") -> FastAPI:
         }
         return f"https://discord.com/oauth2/authorize?{httpx.QueryParams(params)}"
 
-        # ---- OAuth Routes ----
+    # ---- OAuth Routes ----
     def _env_problem() -> str | None:
         problems = []
         if not OAUTH_CLIENT_ID or "YOUR_" in OAUTH_CLIENT_ID:
@@ -138,6 +143,10 @@ def create_app(version: str = "dev") -> FastAPI:
 
     @app.get("/auth/login")
     async def auth_login(request: Request):
+        # ✅ If we're already logged in, don't hit Discord again
+        if _is_logged_in(request):
+            return RedirectResponse("/")
+
         # Validate env first
         prob = _env_problem()
         if prob:
