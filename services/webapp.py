@@ -53,7 +53,7 @@ def create_app(version: str = "dev") -> FastAPI:
         SessionMiddleware,
         secret_key=SESSION_SECRET,
         same_site="lax",
-        https_only=True,  # set True if serving HTTPS directly here
+        https_only=False,  # set True if serving HTTPS directly here
     )
 
     # ---------- Auth (Discord OAuth) ----------
