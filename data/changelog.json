@@ -1,4 +1,24 @@
 [
+
+  {
+    "version":"0.0.4.9",
+    "date":"2025-11-18",
+    "changes":[
+      "Fixed invalid/expired code handling and improved error responses for token exchange failures.",
+      "Ensured redirect_uri and client credentials are validated with clearer hints when misconfigured.",
+      "Prevented /auth/login from calling Discord again if the user is already logged in, reducing rate-limit spam and avoiding redirect loops.",
+      "Restored the dashboard routes after previous refactors so the web UI is fully usable again.",
+      "Updated the root dashboard (/) so logged-in users see a grid of the bot’s guilds with name, ID, and member count, each linking to /guild/{id}.",
+      "Kept per-guild pages hard-protected with OAuth + “must be a member” checks to prevent unauthorized access.",
+      "Made the status page more dynamic: it periodically refreshes /api/status, showing Discord connection state, database health, dashboard host/port, CurseForge monitor status, and last check timestamps.",
+      "Added clearer labels for “Up / Issue / Enabled / Disabled” and cleaned up the layout for better at-a-glance reading.",
+      "Adjusted SessionMiddleware configuration and https_only handling so the dashboard works correctly behind a real HTTPS reverse proxy without breaking local/dev setups.",
+      "Squashed a regression where https_only was briefly set incorrectly, causing issues for non-HTTPS local testing.",
+      "Added a favicon for the web dashboard.",
+      "Minor style and layout tweaks to keep the modern dark/light theming consistent across pages."
+
+    ]
+  },
   {
     "version": "0.0.4.8",
     "date": "2025-11-12",
