@@ -78,24 +78,50 @@ def create_app(version: str = "dev") -> FastAPI:
         return True
 
     async def _ensure_guilds_cached(request: Request):
-        """Ensure session has the current user's guild IDs cached."""
+        """
+        Ensure session has the current user's guild IDs cached.
+
+        We always write *something* into session['guild_ids'] so we don't
+        hammer Discord on errors or rate limits.
+        """
         if not _is_logged_in(request):
             return
         if "guild_ids" in request.session:
             return
+
         token = request.session["access_token"]
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(
-                f"{DISCORD_API}/users/@me/guilds",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-        if r.status_code == 200:
-            gids = [str(g.get("id")) for g in r.json() if g.get("id")]
-            request.session["guild_ids"] = gids
+        gids: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    f"{DISCORD_API}/users/@me/guilds",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            if r.status_code == 200:
+                gids = [str(g.get("id")) for g in r.json() if g.get("id")]
+        except Exception:
+            # Network / Discord issue → leave gids as [] so we don't retry forever
+            gids = []
+
+        # Even on failure, cache the result (possibly empty) to avoid rate-limit loops
+        request.session["guild_ids"] = gids
 
     async def require_guild_member(request: Request, gid: int):
+        """
+        Enforce that the logged-in user is in this guild *if* we were able
+        to load their guild list from Discord.
+
+        If we couldn't load (rate limit, network issue, missing scope),
+        we don't block access – we just skip the membership check.
+        """
         await _ensure_guilds_cached(request)
-        gids = set(request.session.get("guild_ids", []))
+        raw = request.session.get("guild_ids")
+        gids = set(raw or [])
+
+        # If we have no data at all, don't hard-block – just allow.
+        if not gids:
+            return True
+
         if str(gid) not in gids:
             raise HTTPException(status_code=403, detail="You are not a member of this guild.")
         return True
@@ -784,7 +810,7 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
         return HTMLResponse(page_shell("Status • CelestiGuard", "", body, version, _bot_avatar_url(28)))
 
-        # ---------- Root (soft-protected) ----------
+    # ---------- Root (soft-protected) ----------
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         logged_in = _is_logged_in(request)
@@ -851,7 +877,6 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
         """
 
         return HTMLResponse(page_shell("CelestiGuard", header_right, body, version, _bot_avatar_url(28)))
-
 
     # ---------- Guild (hard-protected) ----------
     @app.get("/guild/{gid}", response_class=HTMLResponse)
