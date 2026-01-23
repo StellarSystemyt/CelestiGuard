@@ -16,7 +16,6 @@
       "Squashed a regression where https_only was briefly set incorrectly, causing issues for non-HTTPS local testing.",
       "Added a favicon for the web dashboard.",
       "Minor style and layout tweaks to keep the modern dark/light theming consistent across pages."
-
     ]
   },
   {
