@@ -439,7 +439,7 @@ export OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/callback
             },
             "database": {"ok": _db_ok()},
             "dashboard": {
-                "host": os.getenv("DASHBOARD_HOST", "127.0.0.1"),
+                "host": os.getenv("DASHBOARD_HOST", "3.145.194.13"),
                 "port": int(os.getenv("DASHBOARD_PORT", "5500")),
             },
             "curseforge": {
