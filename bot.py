@@ -14,7 +14,7 @@ from discord.ext import commands
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", " ")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5500"))
 CELESTIGUARD_VERSION = os.getenv("CELESTIGUARD_VERSION", "dev")
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "").strip()
